@@ -29,18 +29,20 @@ export function tileKey(x: number, y: number): string {
 
 /**
  * Octant transformation multipliers.
- * Each octant is defined by 4 multipliers (xx, xy, yx, yy) that map
- * the canonical octant scan (row, col) into actual (dx, dy) offsets.
+ * Each entry [xx, xy, yx, yy] transforms (row, col) in octant-local space
+ * into (dx, dy) in map space: dx = col*xx + row*xy, dy = col*yx + row*yy
+ *
+ * The 8 octants cover all 360° of the FOV.
  */
-const OCTANT_TRANSFORMS: readonly [number, number, number, number][] = [
-  [1, 0, 0, 1],   // octant 0: E-NE
-  [0, 1, 1, 0],   // octant 1: NE-N
-  [0, -1, 1, 0],  // octant 2: NW-N
-  [-1, 0, 0, 1],  // octant 3: W-NW
-  [-1, 0, 0, -1], // octant 4: W-SW
-  [0, -1, -1, 0], // octant 5: SW-S
-  [0, 1, -1, 0],  // octant 6: SE-S
-  [1, 0, 0, -1],  // octant 7: E-SE
+const OCTANT_MULTIPLIERS: readonly [number, number, number, number][] = [
+  [1, 0, 0, 1],
+  [0, 1, 1, 0],
+  [0, -1, 1, 0],
+  [-1, 0, 0, 1],
+  [-1, 0, 0, -1],
+  [0, -1, -1, 0],
+  [0, 1, -1, 0],
+  [1, 0, 0, -1],
 ];
 
 /**
@@ -60,6 +62,7 @@ export function computeLOS(
 ): LOSResult {
   const visibleSet = new Set<string>();
   const visibleTiles: [number, number][] = [];
+  const radiusSq = radius * radius;
 
   // Helper to mark a tile as visible (deduplicates via Set)
   function markVisible(x: number, y: number): void {
@@ -74,8 +77,8 @@ export function computeLOS(
   markVisible(originX, originY);
 
   // Scan each octant
-  for (const transform of OCTANT_TRANSFORMS) {
-    scanOctant(map, originX, originY, radius, 1, 1.0, 0.0, transform, markVisible);
+  for (const mult of OCTANT_MULTIPLIERS) {
+    castOctant(map, originX, originY, radiusSq, 1, 1.0, 0.0, mult, markVisible);
   }
 
   return { visibleSet, visibleTiles };
@@ -84,93 +87,95 @@ export function computeLOS(
 /**
  * Recursively scan one octant of the FOV.
  *
+ * In each octant, we scan outward row by row (row = distance from origin).
+ * Within each row, we iterate columns from 0 up to row.
+ * A "slope" is column / row, ranging from 0.0 (directly along an axis)
+ * to 1.0 (at 45° diagonal). We track the start and end slopes of the
+ * visible arc and narrow them when walls are encountered.
+ *
  * @param map - The game map
  * @param ox - Origin X
  * @param oy - Origin Y
- * @param radius - Vision radius
- * @param row - Current row being scanned (distance from origin)
- * @param startSlope - Start slope of the unblocked arc (1.0 = full open)
- * @param endSlope - End slope of the unblocked arc (0.0 = full open)
- * @param transform - Octant transformation multipliers [xx, xy, yx, yy]
+ * @param radiusSq - Squared vision radius
+ * @param row - Current row being scanned (distance from origin, starts at 1)
+ * @param startSlope - Start slope of visible arc (starts at 1.0)
+ * @param endSlope - End slope of visible arc (starts at 0.0)
+ * @param mult - Octant transformation [xx, xy, yx, yy]
  * @param markVisible - Callback to mark a tile visible
  */
-function scanOctant(
+function castOctant(
   map: GameMap,
   ox: number,
   oy: number,
-  radius: number,
+  radiusSq: number,
   row: number,
   startSlope: number,
   endSlope: number,
-  transform: readonly [number, number, number, number],
+  mult: readonly [number, number, number, number],
   markVisible: (x: number, y: number) => void,
 ): void {
   if (startSlope < endSlope) return;
 
-  const [xx, xy, yx, yy] = transform;
-  let currentStart = startSlope;
+  const [xx, xy, yx, yy] = mult;
+  let nextStartSlope = startSlope;
 
-  for (let currentRow = row; currentRow <= radius; currentRow++) {
+  for (let i = row; i * i <= radiusSq; i++) {
     let blocked = false;
 
-    for (let col = -currentRow; col <= 0; col++) {
-      // Map (row, col) in canonical octant space to actual (dx, dy)
-      const dx = col * xx + currentRow * xy;
-      const dy = col * yx + currentRow * yy;
+    for (let j = 0; j <= i; j++) {
+      // Slope of this column relative to the row
+      const leftSlope = (j - 0.5) / (i + 0.5);
+      const rightSlope = (j + 0.5) / (i - 0.5);
+
+      // If tile is past the start of the visible arc, skip
+      if (rightSlope > nextStartSlope) continue;
+      // If tile is before the end of the visible arc, stop this row
+      if (leftSlope < endSlope) break;
+
+      // Transform octant-local (row=i, col=j) to map-space delta
+      const dx = j * xx + i * xy;
+      const dy = j * yx + i * yy;
       const mapX = ox + dx;
       const mapY = oy + dy;
 
-      // Slopes for this tile's edges
-      const leftSlope = (col - 0.5) / (currentRow + 0.5);
-      const rightSlope = (col + 0.5) / (currentRow - 0.5);
-
-      // Skip tiles outside the current visible arc
-      if (currentStart < rightSlope) continue;
-      if (endSlope > leftSlope) break;
-
-      // Euclidean distance check
-      if (dx * dx + dy * dy <= radius * radius) {
+      // Distance check (Euclidean, squared)
+      if (dx * dx + dy * dy <= radiusSq) {
         if (isInBounds(map, mapX, mapY)) {
           markVisible(mapX, mapY);
         }
       }
 
-      // Track shadow state
+      // Wall/blocking logic
+      const tileBlocks = !isInBounds(map, mapX, mapY) || isWall(map, mapX, mapY);
+
       if (blocked) {
-        // Previous tile was a wall
-        if (!isInBounds(map, mapX, mapY) || isWall(map, mapX, mapY)) {
-          // Still blocked — update start slope
-          currentStart = rightSlope;
+        if (tileBlocks) {
+          // Still in shadow — update the next start slope
+          nextStartSlope = rightSlope;
         } else {
-          // Transition from blocked to open
+          // Emerged from shadow
           blocked = false;
-          currentStart = rightSlope;
+          nextStartSlope = rightSlope;
         }
-      } else {
-        // Previous tile was open
-        if (
-          (!isInBounds(map, mapX, mapY) || isWall(map, mapX, mapY)) &&
-          currentRow < radius
-        ) {
-          // Transition from open to blocked — recurse for the open arc
-          blocked = true;
-          scanOctant(
-            map,
-            ox,
-            oy,
-            radius,
-            currentRow + 1,
-            currentStart,
-            rightSlope,
-            transform,
-            markVisible,
-          );
-          currentStart = rightSlope;
-        }
+      } else if (tileBlocks) {
+        // Entering shadow — recurse for the remaining open arc
+        blocked = true;
+        castOctant(
+          map,
+          ox,
+          oy,
+          radiusSq,
+          i + 1,
+          nextStartSlope,
+          rightSlope,
+          mult,
+          markVisible,
+        );
+        nextStartSlope = rightSlope;
       }
     }
 
-    // If the last tile in the row was blocked, stop scanning further rows
-    if (blocked) break;
+    // If the entire row ended blocked, stop
+    if (blocked) return;
   }
 }

@@ -9,7 +9,7 @@
  * Supports seedable PRNG for deterministic/reproducible output.
  */
 
-import { GameMap, TileType } from '../../tilemap/types.ts';
+import { GameMap, TileType } from '../tilemap/types.ts';
 
 // ---------------------------------------------------------------------------
 // Public interface
