@@ -14,12 +14,17 @@
  * - After a frontier tile's animation completes, the tile transfers to a batched layer.
  *
  * Transition modes:
- * - "rise": vertical translation + alpha (default, Rogue Wizards feel)
+ * - "rise": vertical translation + alpha + scale (default, Rogue Wizards feel)
  * - "fade": pure alpha transition, no position change
+ * - "grow": scale from 0.3→1.0 + alpha on reveal, reverse on conceal (pop-in feel)
+ *
+ * A NoiseFilter is applied to the frontier container, giving the visibility
+ * boundary a subtle computational shimmer. The noise seed is continuously
+ * animated via GSAP so the edge feels alive rather than mechanically crisp.
  */
 
 import { useRef, useCallback, useEffect } from 'react';
-import { Container, Graphics } from 'pixi.js';
+import { Container, Graphics, NoiseFilter } from 'pixi.js';
 import { gsap } from 'gsap';
 import type { GameMap } from '../tilemap/types.ts';
 import { TileType } from '../tilemap/types.ts';
@@ -29,7 +34,7 @@ import type { FogState } from './useFogOfWar.ts';
 
 // ── Transition mode ─────────────────────────────────────────────────
 /** Animation mode for tile transitions. */
-export type TransitionMode = 'rise' | 'fade';
+export type TransitionMode = 'rise' | 'fade' | 'grow';
 
 // ── Color palette ───────────────────────────────────────────────────
 
@@ -60,8 +65,12 @@ const DURATION_VARIANCE = 0.05;
 const MAX_STAGGER = 0.15;
 /** Vertical offset (px) for rise/fall animation. */
 const RISE_OFFSET = 20;
-/** Scale at start of reveal animation. */
+/** Scale at start of reveal animation (rise mode). */
 const REVEAL_START_SCALE = 0.8;
+/** Scale at start of reveal animation (grow mode). */
+const GROW_START_SCALE = 0.3;
+/** Scale at end of conceal animation (grow mode). */
+const GROW_END_SCALE = 0.3;
 
 // ── Color utilities ─────────────────────────────────────────────────
 
@@ -269,6 +278,10 @@ export function FogOfWarRenderer({
   const animatingTilesRef = useRef<Set<string>>(new Set());
   // Track previous fogState to detect changes
   const prevFogRef = useRef<FogState | null>(null);
+  // Track the noise filter instance applied to the frontier layer
+  const noiseFilterRef = useRef<NoiseFilter | null>(null);
+  // Track the noise animation tween
+  const noiseTweenRef = useRef<gsap.core.Tween | null>(null);
 
   // One-time setup: create the layer containers
   const setupLayers = useCallback((parentContainer: Container) => {
@@ -286,6 +299,14 @@ export function FogOfWarRenderer({
     const frontierC = new Container();
     parentContainer.addChild(frontierC);
     frontierContainerRef.current = frontierC;
+
+    // Apply a subtle noise filter to the frontier layer for "alive edge" shimmer
+    const noiseFilter = new NoiseFilter({
+      noise: 0.2,
+      seed: Math.random(),
+    });
+    frontierC.filters = [noiseFilter];
+    noiseFilterRef.current = noiseFilter;
   }, []);
 
   // Draw all remembered (explored but not visible) tiles as a batch
@@ -333,6 +354,12 @@ export function FogOfWarRenderer({
         tileG.y = targetPy + RISE_OFFSET;
         tileG.alpha = 0;
         tileG.scale.set(REVEAL_START_SCALE);
+      } else if (mode === 'grow') {
+        tileG.x = targetPx + TILE_SIZE * (1 - GROW_START_SCALE) / 2;
+        tileG.y = targetPy + TILE_SIZE * (1 - GROW_START_SCALE) / 2;
+        tileG.alpha = 0;
+        tileG.scale.set(GROW_START_SCALE);
+        tileG.pivot.set(0, 0);
       } else {
         // fade mode
         tileG.x = targetPx;
@@ -345,40 +372,47 @@ export function FogOfWarRenderer({
       const delay = computeStaggerDelay(x, y, playerX, playerY, MAX_STAGGER);
       const duration = computeDuration();
 
-      const tweenProps: gsap.TweenVars =
-        mode === 'rise'
-          ? {
-              x: targetPx,
-              y: targetPy,
-              alpha: 1,
-              duration,
-              delay,
-              ease: 'power2.out',
-              onComplete: () => {
-                animatingTilesRef.current.delete(key);
-                frontierContainer.removeChild(tileG);
-                tileG.destroy();
-                removeTweenFromActive(tween);
-                requestRedrawBatched();
-              },
-            }
-          : {
-              alpha: 1,
-              duration,
-              delay,
-              ease: 'power2.out',
-              onComplete: () => {
-                animatingTilesRef.current.delete(key);
-                frontierContainer.removeChild(tileG);
-                tileG.destroy();
-                removeTweenFromActive(tween);
-                requestRedrawBatched();
-              },
-            };
+      const onRevealComplete = () => {
+        animatingTilesRef.current.delete(key);
+        frontierContainer.removeChild(tileG);
+        tileG.destroy();
+        removeTweenFromActive(tween);
+        requestRedrawBatched();
+      };
 
-      // For rise mode, also animate scale
+      let tweenProps: gsap.TweenVars;
+
       if (mode === 'rise') {
-        tweenProps['pixi'] = { scaleX: 1, scaleY: 1 };
+        tweenProps = {
+          x: targetPx,
+          y: targetPy,
+          alpha: 1,
+          duration,
+          delay,
+          ease: 'power2.out',
+          onComplete: onRevealComplete,
+          pixi: { scaleX: 1, scaleY: 1 },
+        };
+      } else if (mode === 'grow') {
+        tweenProps = {
+          x: targetPx,
+          y: targetPy,
+          alpha: 1,
+          duration,
+          delay,
+          ease: 'back.out(1.4)',
+          onComplete: onRevealComplete,
+          pixi: { scaleX: 1, scaleY: 1 },
+        };
+      } else {
+        // fade
+        tweenProps = {
+          alpha: 1,
+          duration,
+          delay,
+          ease: 'power2.out',
+          onComplete: onRevealComplete,
+        };
       }
 
       const tween = gsap.to(tileG, tweenProps);
@@ -419,35 +453,46 @@ export function FogOfWarRenderer({
       const delay = computeStaggerDelay(x, y, playerX, playerY, MAX_STAGGER);
       const duration = computeDuration();
 
-      const tweenProps: gsap.TweenVars =
-        mode === 'rise'
-          ? {
-              y: py + RISE_OFFSET,
-              alpha: 0,
-              duration,
-              delay,
-              ease: 'power2.in',
-              onComplete: () => {
-                animatingTilesRef.current.delete(key);
-                frontierContainer.removeChild(tileG);
-                tileG.destroy();
-                removeTweenFromActive(tween);
-                requestRedrawBatched();
-              },
-            }
-          : {
-              alpha: 0,
-              duration,
-              delay,
-              ease: 'power2.in',
-              onComplete: () => {
-                animatingTilesRef.current.delete(key);
-                frontierContainer.removeChild(tileG);
-                tileG.destroy();
-                removeTweenFromActive(tween);
-                requestRedrawBatched();
-              },
-            };
+      const onConcealComplete = () => {
+        animatingTilesRef.current.delete(key);
+        frontierContainer.removeChild(tileG);
+        tileG.destroy();
+        removeTweenFromActive(tween);
+        requestRedrawBatched();
+      };
+
+      let tweenProps: gsap.TweenVars;
+
+      if (mode === 'rise') {
+        tweenProps = {
+          y: py + RISE_OFFSET,
+          alpha: 0,
+          duration,
+          delay,
+          ease: 'power2.in',
+          onComplete: onConcealComplete,
+        };
+      } else if (mode === 'grow') {
+        tweenProps = {
+          x: px + TILE_SIZE * (1 - GROW_END_SCALE) / 2,
+          y: py + TILE_SIZE * (1 - GROW_END_SCALE) / 2,
+          alpha: 0,
+          duration,
+          delay,
+          ease: 'power2.in',
+          pixi: { scaleX: GROW_END_SCALE, scaleY: GROW_END_SCALE },
+          onComplete: onConcealComplete,
+        };
+      } else {
+        // fade
+        tweenProps = {
+          alpha: 0,
+          duration,
+          delay,
+          ease: 'power2.in',
+          onComplete: onConcealComplete,
+        };
+      }
 
       const tween = gsap.to(tileG, tweenProps);
       activeTweensRef.current.push(tween);
@@ -516,6 +561,25 @@ export function FogOfWarRenderer({
     // Store current fog for async callbacks
     prevFogRef.current = fogState;
 
+    // Animate noise seed on the frontier layer for continuous shimmer
+    if (noiseFilterRef.current) {
+      // Kill any previous noise tween to avoid stacking
+      if (noiseTweenRef.current) {
+        noiseTweenRef.current.kill();
+        noiseTweenRef.current = null;
+      }
+      const noiseF = noiseFilterRef.current;
+      noiseF.seed = Math.random();
+      // Continuous subtle seed animation while frontier tiles are transitioning
+      noiseTweenRef.current = gsap.to(noiseF, {
+        seed: Math.random() + 1,
+        duration: 0.8,
+        ease: 'none',
+        repeat: -1,
+        yoyo: true,
+      });
+    }
+
     // Draw batched layers
     drawRememberedBatch(rememberedG, fogState);
     drawVisibleBatchWithEntering(visibleG, fogState);
@@ -561,6 +625,10 @@ export function FogOfWarRenderer({
       }
       activeTweensRef.current = [];
       animatingTilesRef.current.clear();
+      if (noiseTweenRef.current) {
+        noiseTweenRef.current.kill();
+        noiseTweenRef.current = null;
+      }
     };
   }, []);
 

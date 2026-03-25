@@ -110,11 +110,26 @@ const App: React.FC = () => {
             border: 'none',
             borderRadius: 3,
             padding: '2px 8px',
+            marginRight: 4,
             cursor: 'pointer',
             fontSize: 12,
           }}
         >
           Fade
+        </button>
+        <button
+          onClick={() => setTransitionMode('grow')}
+          style={{
+            background: transitionMode === 'grow' ? '#5a8' : '#333',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 3,
+            padding: '2px 8px',
+            cursor: 'pointer',
+            fontSize: 12,
+          }}
+        >
+          Grow
         </button>
       </div>
     </div>
