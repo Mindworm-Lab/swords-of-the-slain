@@ -12,7 +12,7 @@
  * @returns                { cameraX, cameraY } pixel offsets to apply to the world container
  */
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { TILE_SIZE } from '../tilemap/TilemapRenderer.tsx';
 
 /** How quickly the camera catches up (0 = frozen, 1 = instant). */
@@ -50,7 +50,10 @@ export function useCamera(
   viewportHeight: number,
 ): CameraOffset {
   // Compute the target we want to lerp toward
-  const target = targetOffset(playerX, playerY, viewportWidth, viewportHeight);
+  const target = useMemo(
+    () => targetOffset(playerX, playerY, viewportWidth, viewportHeight),
+    [playerX, playerY, viewportWidth, viewportHeight],
+  );
 
   // Current camera position (initialized to target so first frame is centered)
   const [camera, setCamera] = useState<CameraOffset>({
@@ -66,7 +69,7 @@ export function useCamera(
   // Update target whenever player moves or viewport resizes
   useEffect(() => {
     targetRef.current = target;
-  }, [target.x, target.y]);
+  }, [target]);
 
   const animate = useCallback(() => {
     const cur = currentRef.current;

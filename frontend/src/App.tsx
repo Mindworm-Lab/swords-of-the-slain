@@ -9,7 +9,6 @@ import { useCamera } from './game/camera/index.ts';
 import { useViewportSize } from './hooks/useViewportSize.ts';
 import { generateDungeon } from './game/dungeon/index.ts';
 import { FogOfWarRenderer, useFogOfWar } from './game/fog/index.ts';
-import type { TransitionMode } from './game/fog/index.ts';
 import type { FogState } from './game/fog/index.ts';
 import { TitleScreen } from './components/TitleScreen.tsx';
 import { HUD } from './components/HUD.tsx';
@@ -33,7 +32,6 @@ interface GameWorldProps {
     startX: number;
     startY: number;
   };
-  transitionMode: TransitionMode;
   /** Called whenever fog state or player position changes. */
   onFogUpdate: (fogState: FogState) => void;
 }
@@ -43,7 +41,7 @@ interface GameWorldProps {
  * can access the PixiJS context, but also needs the map and start position
  * from the parent scope.
  */
-function GameWorld({ dungeon, transitionMode, onFogUpdate }: GameWorldProps) {
+function GameWorld({ dungeon, onFogUpdate }: GameWorldProps) {
   const { playerX, playerY } = usePlayerMovement(dungeon.map, dungeon.startX, dungeon.startY);
   const { width: vpWidth, height: vpHeight } = useViewportSize();
   const { cameraX, cameraY } = useCamera(playerX, playerY, vpWidth, vpHeight);
@@ -63,7 +61,6 @@ function GameWorld({ dungeon, transitionMode, onFogUpdate }: GameWorldProps) {
       <FogOfWarRenderer
         map={dungeon.map}
         fogState={fogState}
-        transitionMode={transitionMode}
       />
       <PlayerRenderer tileX={playerX} tileY={playerY} />
     </pixiContainer>
@@ -79,9 +76,6 @@ const App: React.FC = () => {
 
   // Generate the dungeon once (deterministic seed → stable across re-renders)
   const dungeon = useMemo(() => generateDungeon(DUNGEON_WIDTH, DUNGEON_HEIGHT, 42), []);
-
-  // Transition mode state — toggleable via HUD
-  const [transitionMode, setTransitionMode] = useState<TransitionMode>('rise');
 
   // Fog state lifted from GameWorld for HUD consumption
   const [fogState, setFogState] = useState<FogState | null>(null);
@@ -103,7 +97,6 @@ const App: React.FC = () => {
       >
         <GameWorld
           dungeon={dungeon}
-          transitionMode={transitionMode}
           onFogUpdate={handleFogUpdate}
         />
       </Application>
@@ -111,8 +104,6 @@ const App: React.FC = () => {
       {/* HUD overlay */}
       {fogState && (
         <HUD
-          transitionMode={transitionMode}
-          onTransitionModeChange={setTransitionMode}
           exploredSet={fogState.exploredSet}
           visibleSet={fogState.visibleSet}
           playerX={fogState.playerX}

@@ -1,72 +1,112 @@
 /**
- * Tests for TransitionMode type and grow transition mode constants.
+ * Tests for the columnar emergence fog-of-war system.
  *
- * Since the animation logic is tightly coupled to PixiJS Graphics and GSAP tweens,
- * we test the type-level contract and the pure helper functions that drive animations.
+ * Validates column height constants, stagger delay behavior,
+ * and animation duration variance — the pure helpers that drive
+ * the GSAP-animated frontier tile reveal/conceal cycle.
  */
 
 import { describe, it, expect } from 'vitest';
-import type { TransitionMode } from '../FogOfWarRenderer.tsx';
+import {
+  COLUMN_MAX_HEIGHT,
+  COLUMN_REMEMBERED_HEIGHT,
+} from '../columnRenderer.ts';
+import {
+  computeStaggerDelay,
+  computeDuration,
+} from '../fogAnimationHelpers.ts';
 
-// ── Type-level tests ────────────────────────────────────────────────
+// ── Column height constants ─────────────────────────────────────────
 
-describe('TransitionMode', () => {
-  it('accepts "rise" as a valid transition mode', () => {
-    const mode: TransitionMode = 'rise';
-    expect(mode).toBe('rise');
+describe('column height constants', () => {
+  it('COLUMN_MAX_HEIGHT is a positive number', () => {
+    expect(COLUMN_MAX_HEIGHT).toBeGreaterThan(0);
   });
 
-  it('accepts "fade" as a valid transition mode', () => {
-    const mode: TransitionMode = 'fade';
-    expect(mode).toBe('fade');
+  it('COLUMN_REMEMBERED_HEIGHT is a positive number', () => {
+    expect(COLUMN_REMEMBERED_HEIGHT).toBeGreaterThan(0);
   });
 
-  it('accepts "grow" as a valid transition mode', () => {
-    const mode: TransitionMode = 'grow';
-    expect(mode).toBe('grow');
+  it('visible columns are taller than remembered columns', () => {
+    expect(COLUMN_MAX_HEIGHT).toBeGreaterThan(COLUMN_REMEMBERED_HEIGHT);
   });
 
-  it('all three modes are distinct values', () => {
-    const modes: TransitionMode[] = ['rise', 'fade', 'grow'];
-    const unique = new Set(modes);
-    expect(unique.size).toBe(3);
+  it('COLUMN_MAX_HEIGHT is a reasonable pixel value (≤ TILE_SIZE)', () => {
+    // Column extrusion should be shorter than the tile itself
+    expect(COLUMN_MAX_HEIGHT).toBeLessThanOrEqual(32);
+  });
+
+  it('COLUMN_REMEMBERED_HEIGHT is at least 1/4 of COLUMN_MAX_HEIGHT', () => {
+    // Remembered columns should still be visually present, not invisible
+    expect(COLUMN_REMEMBERED_HEIGHT).toBeGreaterThanOrEqual(COLUMN_MAX_HEIGHT / 4);
+  });
+});
+
+// ── Stagger delay ───────────────────────────────────────────────────
+
+describe('computeStaggerDelay', () => {
+  it('produces values in [0, maxDelay] range', () => {
+    const maxDelay = 0.15;
+    for (let i = 0; i < 100; i++) {
+      const delay = computeStaggerDelay(
+        Math.floor(Math.random() * 20),
+        Math.floor(Math.random() * 20),
+        10,
+        10,
+        maxDelay,
+      );
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThanOrEqual(maxDelay);
+    }
+  });
+
+  it('gives shorter base delays for tiles closer to player', () => {
+    // Run many samples to average out the random jitter component
+    const maxDelay = 0.15;
+    const playerX = 10;
+    const playerY = 10;
+    const samples = 200;
+
+    let closeSum = 0;
+    let farSum = 0;
+
+    for (let i = 0; i < samples; i++) {
+      closeSum += computeStaggerDelay(10, 11, playerX, playerY, maxDelay); // 1 tile away
+      farSum += computeStaggerDelay(10, 20, playerX, playerY, maxDelay); // 10 tiles away
+    }
+
+    const closeAvg = closeSum / samples;
+    const farAvg = farSum / samples;
+
+    // On average, close tiles should have shorter delays than far tiles
+    expect(closeAvg).toBeLessThan(farAvg);
+  });
+
+  it('returns 0-range when maxDelay is 0', () => {
+    const delay = computeStaggerDelay(5, 5, 10, 10, 0);
+    expect(delay).toBe(0);
   });
 });
 
-describe('grow mode animation parameters', () => {
-  // These constants mirror the values in FogOfWarRenderer.tsx.
-  // They serve as a regression guard: if someone changes the constants,
-  // these tests surface the intent.
-  const GROW_START_SCALE = 0.3;
-  const GROW_END_SCALE = 0.3;
-  const TILE_SIZE = 32;
+// ── Animation duration ──────────────────────────────────────────────
 
-  it('grow reveal starts at expected scale', () => {
-    expect(GROW_START_SCALE).toBeGreaterThan(0);
-    expect(GROW_START_SCALE).toBeLessThan(1);
+describe('computeDuration', () => {
+  it('produces durations in a reasonable range', () => {
+    for (let i = 0; i < 100; i++) {
+      const d = computeDuration();
+      // BASE_DURATION = 0.4, DURATION_VARIANCE = 0.05 → range [0.35, 0.45]
+      expect(d).toBeGreaterThanOrEqual(0.3);
+      expect(d).toBeLessThanOrEqual(0.5);
+    }
   });
 
-  it('grow conceal ends at expected scale', () => {
-    expect(GROW_END_SCALE).toBeGreaterThan(0);
-    expect(GROW_END_SCALE).toBeLessThan(1);
-  });
-
-  it('grow reveal centers the tile correctly at start', () => {
-    // At start, the tile is offset to keep it centered while scaled down.
-    // offset = TILE_SIZE * (1 - scale) / 2
-    const startOffset = TILE_SIZE * (1 - GROW_START_SCALE) / 2;
-    expect(startOffset).toBeCloseTo(TILE_SIZE * 0.35, 5);
-    // At the end of the animation, tile is at its natural position (offset 0 from target)
-  });
-
-  it('grow conceal centers the tile correctly at end', () => {
-    const endOffset = TILE_SIZE * (1 - GROW_END_SCALE) / 2;
-    expect(endOffset).toBeCloseTo(TILE_SIZE * 0.35, 5);
-  });
-
-  it('grow mode uses symmetric scale for reveal and conceal', () => {
-    // Start scale of reveal should equal end scale of conceal
-    // for visual consistency (pop in / pop out)
-    expect(GROW_START_SCALE).toBe(GROW_END_SCALE);
+  it('produces varied durations (not all identical)', () => {
+    const durations = new Set<number>();
+    for (let i = 0; i < 50; i++) {
+      durations.add(computeDuration());
+    }
+    // With random variance, we should get many distinct values
+    expect(durations.size).toBeGreaterThan(1);
   });
 });
+

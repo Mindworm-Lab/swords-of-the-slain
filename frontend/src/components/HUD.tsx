@@ -12,14 +12,9 @@
  */
 
 import type { GameMap } from '../game/tilemap/types.ts';
-import type { TransitionMode } from '../game/fog/index.ts';
 import { Minimap } from './Minimap.tsx';
 
 export interface HUDProps {
-  /** Current fog transition mode. */
-  transitionMode: TransitionMode;
-  /** Callback to change the fog transition mode. */
-  onTransitionModeChange: (mode: TransitionMode) => void;
   /** Set of explored tile keys. */
   exploredSet: Set<string>;
   /** Set of currently visible tile keys. */
@@ -40,11 +35,7 @@ const panelStyle: React.CSSProperties = {
   backdropFilter: 'blur(4px)',
 };
 
-const TRANSITION_MODES: TransitionMode[] = ['rise', 'fade', 'grow'];
-
 export const HUD: React.FC<HUDProps> = ({
-  transitionMode,
-  onTransitionModeChange,
   exploredSet,
   visibleSet,
   playerX,
@@ -79,42 +70,6 @@ export const HUD: React.FC<HUDProps> = ({
         }}>
           ⚔ SWORDS OF THE SLAIN
         </span>
-      </div>
-
-      {/* Top-right: Vision mode toggle */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 12,
-          right: 12,
-          ...panelStyle,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
-          pointerEvents: 'auto',
-        }}
-      >
-        <span style={{ color: '#888', fontSize: 12, marginRight: 4 }}>Fog:</span>
-        {TRANSITION_MODES.map((mode) => (
-          <button
-            key={mode}
-            onClick={() => onTransitionModeChange(mode)}
-            style={{
-              background: transitionMode === mode ? '#5a8' : '#333',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 3,
-              padding: '3px 10px',
-              cursor: 'pointer',
-              fontSize: 12,
-              fontFamily: 'monospace',
-              textTransform: 'capitalize',
-              transition: 'background 0.15s',
-            }}
-          >
-            {mode}
-          </button>
-        ))}
       </div>
 
       {/* Bottom-left: Health bar placeholder */}

@@ -13,4 +13,4 @@ export { useFogOfWar, VISION_RADIUS } from './useFogOfWar.ts';
 export type { FogState } from './useFogOfWar.ts';
 
 export { FogOfWarRenderer } from './FogOfWarRenderer.tsx';
-export type { FogOfWarRendererProps, TransitionMode } from './FogOfWarRenderer.tsx';
+export type { FogOfWarRendererProps } from './FogOfWarRenderer.tsx';
