@@ -1,9 +1,9 @@
 /**
- * Tests for useFogOfWar hook logic.
+ * Tests for useFogOfWar hook logic and three-state visibility classification.
  *
  * Since useFogOfWar is a React hook, we test the underlying logic directly
  * by exercising computeLOS, diffVisibility, and the explored-set semantics.
- * We also do a lightweight integration test of the hook's state transitions.
+ * We also test the three-state classification: enteringNew vs enteringRevisit.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -249,6 +249,179 @@ describe('useFogOfWar logic', () => {
       const diff = diffVisibility(los1.visibleSet, los2.visibleSet, los2.visibleTiles);
 
       expect(diff.entering.length + diff.stable.length).toBe(los2.visibleTiles.length);
+    });
+  });
+
+  // ── Three-state classification tests ──────────────────────────────
+
+  describe('three-state classification (enteringNew vs enteringRevisit)', () => {
+    it('without exploredSet, all entering tiles are classified as enteringNew', () => {
+      const map = openMap(20, 20);
+      const los = computeLOS(map, 10, 10, VISION_RADIUS);
+      const emptyPrev = new Set<string>();
+      const diff = diffVisibility(emptyPrev, los.visibleSet, los.visibleTiles);
+
+      expect(diff.enteringNew.length).toBe(los.visibleTiles.length);
+      expect(diff.enteringRevisit.length).toBe(0);
+      // entering is the union
+      expect(diff.entering.length).toBe(diff.enteringNew.length + diff.enteringRevisit.length);
+    });
+
+    it('with empty exploredSet, all entering tiles are enteringNew', () => {
+      const map = openMap(20, 20);
+      const los = computeLOS(map, 10, 10, VISION_RADIUS);
+      const emptyPrev = new Set<string>();
+      const emptyExplored = new Set<string>();
+      const diff = diffVisibility(emptyPrev, los.visibleSet, los.visibleTiles, emptyExplored);
+
+      expect(diff.enteringNew.length).toBe(los.visibleTiles.length);
+      expect(diff.enteringRevisit.length).toBe(0);
+    });
+
+    it('tiles not in exploredSet are classified as enteringNew', () => {
+      const map = openMap(30, 30);
+      const los1 = computeLOS(map, 10, 10, VISION_RADIUS);
+      const los2 = computeLOS(map, 11, 10, VISION_RADIUS);
+
+      // exploredSet = los1 visible (tiles seen from first position)
+      const exploredSet = new Set(los1.visibleSet);
+
+      const diff = diffVisibility(
+        los1.visibleSet,
+        los2.visibleSet,
+        los2.visibleTiles,
+        exploredSet,
+      );
+
+      // enteringNew: tiles in los2 but NOT in los1 AND NOT in explored
+      // These are tiles newly visible on the right edge that were never seen
+      for (const [x, y] of diff.enteringNew) {
+        const key = tileKey(x, y);
+        expect(los1.visibleSet.has(key)).toBe(false);
+        expect(exploredSet.has(key)).toBe(false);
+      }
+      expect(diff.enteringNew.length).toBeGreaterThan(0);
+    });
+
+    it('tiles in exploredSet are classified as enteringRevisit', () => {
+      const map = openMap(30, 30);
+
+      // Move far enough that some tiles leave vision, then come back
+      const los1 = computeLOS(map, 10, 10, VISION_RADIUS);
+      const los2 = computeLOS(map, 15, 10, VISION_RADIUS); // Move right 5 tiles
+      const los3 = computeLOS(map, 10, 10, VISION_RADIUS); // Move back
+
+      // Build explored set after first two positions
+      const exploredSet = new Set(los1.visibleSet);
+      for (const key of los2.visibleSet) exploredSet.add(key);
+
+      // Diff: los2 → los3 with explored set
+      const diff = diffVisibility(
+        los2.visibleSet,
+        los3.visibleSet,
+        los3.visibleTiles,
+        exploredSet,
+      );
+
+      // enteringRevisit: tiles now visible that were NOT in los2 but WERE explored before
+      for (const [x, y] of diff.enteringRevisit) {
+        const key = tileKey(x, y);
+        expect(los2.visibleSet.has(key)).toBe(false); // Not in previous visible
+        expect(exploredSet.has(key)).toBe(true);       // But was explored
+      }
+      // Moving back to original position should have revisit tiles
+      expect(diff.enteringRevisit.length).toBeGreaterThan(0);
+    });
+
+    it('entering = enteringNew + enteringRevisit (always)', () => {
+      const map = openMap(30, 30);
+      const los1 = computeLOS(map, 10, 10, VISION_RADIUS);
+      const los2 = computeLOS(map, 12, 10, VISION_RADIUS);
+
+      const exploredSet = new Set(los1.visibleSet);
+      const diff = diffVisibility(
+        los1.visibleSet,
+        los2.visibleSet,
+        los2.visibleTiles,
+        exploredSet,
+      );
+
+      expect(diff.entering.length).toBe(
+        diff.enteringNew.length + diff.enteringRevisit.length,
+      );
+    });
+
+    it('enteringNew and enteringRevisit are disjoint sets', () => {
+      const map = openMap(30, 30);
+      const los1 = computeLOS(map, 10, 10, VISION_RADIUS);
+      const los2 = computeLOS(map, 15, 10, VISION_RADIUS);
+      const los3 = computeLOS(map, 12, 10, VISION_RADIUS);
+
+      const exploredSet = new Set(los1.visibleSet);
+      for (const key of los2.visibleSet) exploredSet.add(key);
+
+      const diff = diffVisibility(
+        los2.visibleSet,
+        los3.visibleSet,
+        los3.visibleTiles,
+        exploredSet,
+      );
+
+      const newKeys = new Set(diff.enteringNew.map(([x, y]) => tileKey(x, y)));
+      const revisitKeys = new Set(diff.enteringRevisit.map(([x, y]) => tileKey(x, y)));
+
+      // No overlap between new and revisit
+      for (const key of newKeys) {
+        expect(revisitKeys.has(key)).toBe(false);
+      }
+    });
+
+    it('exploredSet grows monotonically — revisit tiles increase over time', () => {
+      const map = openMap(30, 30);
+
+      // Simulate: move right, then back, then right again
+      const los1 = computeLOS(map, 10, 10, VISION_RADIUS);
+      const explored = new Set(los1.visibleSet);
+
+      const los2 = computeLOS(map, 15, 10, VISION_RADIUS);
+      const diff2 = diffVisibility(los1.visibleSet, los2.visibleSet, los2.visibleTiles, explored);
+      for (const key of los2.visibleSet) explored.add(key);
+
+      const los3 = computeLOS(map, 10, 10, VISION_RADIUS);
+      const diff3 = diffVisibility(los2.visibleSet, los3.visibleSet, los3.visibleTiles, explored);
+
+      // First move: some tiles are new (never explored)
+      expect(diff2.enteringNew.length).toBeGreaterThan(0);
+
+      // Moving back: many tiles should be revisit (they were explored on first move)
+      expect(diff3.enteringRevisit.length).toBeGreaterThan(0);
+      // There should be fewer enteringNew on the return trip since more is explored
+      expect(diff3.enteringNew.length).toBeLessThanOrEqual(diff2.enteringNew.length);
+    });
+
+    it('stable tiles are never in entering, enteringNew, or enteringRevisit', () => {
+      const map = openMap(30, 30);
+      const los1 = computeLOS(map, 10, 10, VISION_RADIUS);
+      const los2 = computeLOS(map, 11, 10, VISION_RADIUS);
+
+      const exploredSet = new Set(los1.visibleSet);
+      const diff = diffVisibility(
+        los1.visibleSet,
+        los2.visibleSet,
+        los2.visibleTiles,
+        exploredSet,
+      );
+
+      const stableKeys = new Set(diff.stable.map(([x, y]) => tileKey(x, y)));
+      const enteringKeys = new Set(diff.entering.map(([x, y]) => tileKey(x, y)));
+      const newKeys = new Set(diff.enteringNew.map(([x, y]) => tileKey(x, y)));
+      const revisitKeys = new Set(diff.enteringRevisit.map(([x, y]) => tileKey(x, y)));
+
+      for (const key of stableKeys) {
+        expect(enteringKeys.has(key)).toBe(false);
+        expect(newKeys.has(key)).toBe(false);
+        expect(revisitKeys.has(key)).toBe(false);
+      }
     });
   });
 });

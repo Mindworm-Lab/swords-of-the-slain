@@ -8,7 +8,7 @@ import { usePlayerMovement } from './game/player/index.ts';
 import { useCamera } from './game/camera/index.ts';
 import { useViewportSize } from './hooks/useViewportSize.ts';
 import { generateDungeon } from './game/dungeon/index.ts';
-import { FogOfWarRenderer, useFogOfWar } from './game/fog/index.ts';
+import { FogOfWarRenderer, useFogOfWar, ABYSS_BG_COLOR } from './game/fog/index.ts';
 import type { FogState } from './game/fog/index.ts';
 import { TitleScreen } from './components/TitleScreen.tsx';
 import { HUD } from './components/HUD.tsx';
@@ -19,8 +19,9 @@ extend({ Container, Graphics });
 // Register GSAP PixiPlugin for animation
 gsap.registerPlugin(PixiPlugin);
 
-/** Dark dungeon background color */
-const BG_COLOR = 0x1a1a2e;
+/** True abyss background — very dark near-black with slight cool cast.
+ *  Provides strong silhouette separation against shaft palette. */
+const BG_COLOR = ABYSS_BG_COLOR;
 
 /** Dungeon dimensions in tiles */
 const DUNGEON_WIDTH = 80;

@@ -4,11 +4,17 @@
  * On each player move, recomputes LOS, diffs against the previous visible set,
  * and maintains the explored set (union of all ever-visible tiles).
  *
+ * Supports three-state visibility classification:
+ * - unknown: never seen → no rendering
+ * - explored-not-visible: seen before but not in current LOS → subdued remembered
+ * - visible: currently in LOS → fully risen, stable
+ *
  * Returns FogState which drives the FogOfWarRenderer:
  * - visibleSet: currently visible tile keys
  * - exploredSet: all ever-seen tile keys (grows monotonically)
- * - entering: tiles just becoming visible (animate in)
- * - exiting: tiles just leaving vision (animate out)
+ * - enteringNew: tiles going unknown→visible (dramatic cap-rise)
+ * - enteringRevisit: tiles going explored→visible (gentle re-lift)
+ * - exiting: tiles going visible→explored (gentle lowering, object permanence preserved)
  * - stable: tiles remaining visible (no animation needed)
  */
 
@@ -26,9 +32,22 @@ export interface FogState {
   visibleSet: Set<string>;
   /** Set of all ever-explored tile keys (grows monotonically). */
   exploredSet: Set<string>;
-  /** Tiles just becoming visible this turn — animate reveal. */
+  /**
+   * All tiles becoming visible this turn (union of enteringNew + enteringRevisit).
+   * @deprecated Use enteringNew / enteringRevisit for asymmetric animation.
+   */
   entering: [number, number][];
-  /** Tiles just leaving vision this turn — animate conceal. */
+  /**
+   * Tiles entering visibility for the FIRST TIME (unknown → visible).
+   * Dramatic cap-rise animation from the abyss.
+   */
+  enteringNew: [number, number][];
+  /**
+   * Tiles RE-ENTERING visibility (explored → visible).
+   * Gentle re-lift animation, NOT full birth-from-nothing.
+   */
+  enteringRevisit: [number, number][];
+  /** Tiles just leaving vision this turn — animate conceal (visible → explored). */
   exiting: [number, number][];
   /** Tiles that remain visible — no animation needed. */
   stable: [number, number][];
@@ -39,8 +58,9 @@ export interface FogState {
 }
 
 /**
- * Compute the initial fog state for a given position (no entering/exiting on first frame).
- * All initially visible tiles are classified as "entering" for the first reveal animation.
+ * Compute the initial fog state for a given position.
+ * All initially visible tiles are classified as "enteringNew" for the first reveal animation,
+ * since no tiles have been explored yet.
  */
 function computeInitialFogState(
   map: GameMap,
@@ -54,6 +74,8 @@ function computeInitialFogState(
     visibleSet: los.visibleSet,
     exploredSet,
     entering: los.visibleTiles, // All tiles "enter" on first computation
+    enteringNew: los.visibleTiles, // All are new on first frame (nothing explored yet)
+    enteringRevisit: [], // No revisits on first frame
     exiting: [],
     stable: [],
     playerX,
@@ -64,6 +86,11 @@ function computeInitialFogState(
 /**
  * Hook that manages fog-of-war state, recomputing LOS and diffing visibility
  * on each player move.
+ *
+ * Tracks three-state classification:
+ * - Tiles entering for the first time (unknown→visible) → enteringNew
+ * - Tiles re-entering from explored state (explored→visible) → enteringRevisit
+ * - Tiles exiting visibility (visible→explored) → exiting (preserves object permanence)
  *
  * @param map - The current game map
  * @param playerX - Current player tile X
@@ -99,9 +126,17 @@ export function useFogOfWar(
   const updateFog = useCallback(
     (px: number, py: number) => {
       const los = computeLOS(map, px, py, VISION_RADIUS);
-      const diff = diffVisibility(prevVisibleRef.current, los.visibleSet, los.visibleTiles);
 
-      // Grow the explored set (never shrinks)
+      // Pass exploredRef.current BEFORE adding new tiles, so we can classify
+      // entering tiles as new (not in explored) vs revisit (was in explored).
+      const diff = diffVisibility(
+        prevVisibleRef.current,
+        los.visibleSet,
+        los.visibleTiles,
+        exploredRef.current,
+      );
+
+      // Grow the explored set AFTER diffing (never shrinks)
       const explored = exploredRef.current;
       for (const key of los.visibleSet) {
         explored.add(key);
@@ -113,6 +148,8 @@ export function useFogOfWar(
         visibleSet: los.visibleSet,
         exploredSet: new Set(explored), // Snapshot for React
         entering: diff.entering,
+        enteringNew: diff.enteringNew,
+        enteringRevisit: diff.enteringRevisit,
         exiting: diff.exiting,
         stable: diff.stable,
         playerX: px,

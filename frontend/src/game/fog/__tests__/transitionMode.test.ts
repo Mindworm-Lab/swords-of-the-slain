@@ -1,10 +1,15 @@
 /**
- * Tests for the columnar emergence fog-of-war system.
+ * Tests for the three-state columnar emergence fog-of-war system.
  *
- * Validates column height constants, stagger delay behavior,
- * animation duration variance, height jitter, and the animation model
- * contract (no yOffset, coplanar top caps) — the pure helpers that drive
- * the GSAP-animated frontier tile reveal/conceal cycle.
+ * Validates:
+ * - Column height constants
+ * - Stagger delay behavior
+ * - Animation duration variance for all three transition types
+ * - Height jitter
+ * - Animation model contract: cap-rise with yOffset for asymmetric transitions
+ *   - unknown → visible: large yOffset, dramatic reveal
+ *   - explored → visible: small yOffset, gentle re-lift
+ *   - visible → explored: alpha stays 1, object permanence preserved
  */
 
 import { describe, it, expect } from 'vitest';
@@ -15,7 +20,14 @@ import {
 import {
   computeStaggerDelay,
   computeDuration,
+  computeNewRevealDuration,
+  computeRevisitRevealDuration,
+  computeConcealDuration,
   computeHeightJitter,
+  RISE_OFFSET_NEW,
+  RISE_OFFSET_REVISIT,
+  SINK_OFFSET,
+  REMEMBERED_YOFFSET,
 } from '../fogAnimationHelpers.ts';
 
 // ── Column height constants ─────────────────────────────────────────
@@ -98,15 +110,15 @@ describe('computeStaggerDelay', () => {
   });
 });
 
-// ── Animation duration ──────────────────────────────────────────────
+// ── Animation duration (generic / backward compat) ──────────────────
 
 describe('computeDuration', () => {
   it('produces durations in a reasonable range', () => {
     for (let i = 0; i < 100; i++) {
       const d = computeDuration();
-      // BASE_DURATION = 0.4, DURATION_VARIANCE = 0.05 → range [0.35, 0.45]
+      // NEW_REVEAL_BASE_DURATION = 0.5, VARIANCE = 0.06 → range [0.44, 0.56]
       expect(d).toBeGreaterThanOrEqual(0.3);
-      expect(d).toBeLessThanOrEqual(0.5);
+      expect(d).toBeLessThanOrEqual(0.7);
     }
   });
 
@@ -117,6 +129,57 @@ describe('computeDuration', () => {
     }
     // With random variance, we should get many distinct values
     expect(durations.size).toBeGreaterThan(1);
+  });
+});
+
+// ── Per-transition duration helpers ─────────────────────────────────
+
+describe('computeNewRevealDuration (unknown → visible)', () => {
+  it('produces durations around 0.5s', () => {
+    for (let i = 0; i < 100; i++) {
+      const d = computeNewRevealDuration();
+      expect(d).toBeGreaterThanOrEqual(0.4);
+      expect(d).toBeLessThanOrEqual(0.6);
+    }
+  });
+
+  it('produces varied durations', () => {
+    const durations = new Set<number>();
+    for (let i = 0; i < 50; i++) {
+      durations.add(computeNewRevealDuration());
+    }
+    expect(durations.size).toBeGreaterThan(1);
+  });
+});
+
+describe('computeRevisitRevealDuration (explored → visible)', () => {
+  it('produces durations around 0.25s (shorter than new reveal)', () => {
+    for (let i = 0; i < 100; i++) {
+      const d = computeRevisitRevealDuration();
+      expect(d).toBeGreaterThanOrEqual(0.15);
+      expect(d).toBeLessThanOrEqual(0.35);
+    }
+  });
+
+  it('is shorter than new reveal on average', () => {
+    let newSum = 0;
+    let revisitSum = 0;
+    const samples = 200;
+    for (let i = 0; i < samples; i++) {
+      newSum += computeNewRevealDuration();
+      revisitSum += computeRevisitRevealDuration();
+    }
+    expect(revisitSum / samples).toBeLessThan(newSum / samples);
+  });
+});
+
+describe('computeConcealDuration (visible → explored)', () => {
+  it('produces durations around 0.35s', () => {
+    for (let i = 0; i < 100; i++) {
+      const d = computeConcealDuration();
+      expect(d).toBeGreaterThanOrEqual(0.25);
+      expect(d).toBeLessThanOrEqual(0.45);
+    }
   });
 });
 
@@ -160,76 +223,168 @@ describe('computeHeightJitter', () => {
   });
 });
 
-// ── Animation model contract ────────────────────────────────────────
+// ── Animation model contract: three-state cap-rise ──────────────────
 //
-// These tests document the columnar emergence animation architecture.
-// The animation model is: { columnHeight, alpha } — NO yOffset.
-// Top caps are coplanar: pinned at y * TILE_SIZE regardless of height.
+// These tests document the asymmetric animation architecture:
+// - unknown → visible: large yOffset cap-rise from abyss
+// - explored → visible: small yOffset re-lift
+// - visible → explored: gentle lowering, alpha stays 1 (object permanence)
 //
 // These are structural/contract tests, not behavioral tests of GSAP.
 
-describe('animation model contract (no yOffset)', () => {
-  it('reveal animation state has only columnHeight and alpha (no yOffset)', () => {
-    // The reveal animation tweens from {columnHeight: 0, alpha: 0}
-    // to {columnHeight: max, alpha: 1}. There is NO yOffset property.
-    // This documents the contract that top caps stay pinned in place.
-    const revealStart = { columnHeight: 0, alpha: 0 };
-    const revealEnd = { columnHeight: COLUMN_MAX_HEIGHT, alpha: 1 };
+describe('animation model contract (three-state cap-rise)', () => {
+  // ── Transition offset constants ───────────────────────────────────
 
-    // Verify the animation state shape has no yOffset
-    expect('yOffset' in revealStart).toBe(false);
-    expect('yOffset' in revealEnd).toBe(false);
+  it('RISE_OFFSET_NEW is a large value for dramatic abyss reveal', () => {
+    expect(RISE_OFFSET_NEW).toBeGreaterThanOrEqual(COLUMN_MAX_HEIGHT * 0.5);
+    // Should be roughly equal to COLUMN_MAX_HEIGHT (cap starts at bottom of shaft)
+    expect(RISE_OFFSET_NEW).toBeLessThanOrEqual(COLUMN_MAX_HEIGHT * 2);
+  });
 
-    // Verify the values are valid
-    expect(revealStart.columnHeight).toBe(0);
+  it('RISE_OFFSET_REVISIT is a small value for gentle re-lift', () => {
+    expect(RISE_OFFSET_REVISIT).toBeGreaterThan(0);
+    expect(RISE_OFFSET_REVISIT).toBeLessThan(RISE_OFFSET_NEW);
+    // Should be much smaller than COLUMN_MAX_HEIGHT
+    expect(RISE_OFFSET_REVISIT).toBeLessThanOrEqual(COLUMN_MAX_HEIGHT * 0.3);
+  });
+
+  it('SINK_OFFSET is a small value for gentle lowering', () => {
+    expect(SINK_OFFSET).toBeGreaterThan(0);
+    expect(SINK_OFFSET).toBeLessThan(RISE_OFFSET_REVISIT);
+    // Should be subtle — just enough to signal "lowered"
+    expect(SINK_OFFSET).toBeLessThanOrEqual(12);
+  });
+
+  it('REMEMBERED_YOFFSET is a small static offset for remembered tiles', () => {
+    expect(REMEMBERED_YOFFSET).toBeGreaterThan(0);
+    expect(REMEMBERED_YOFFSET).toBeLessThanOrEqual(SINK_OFFSET + 2);
+    // Subtle displacement — just enough to distinguish from fully risen
+    expect(REMEMBERED_YOFFSET).toBeLessThanOrEqual(10);
+  });
+
+  // ── unknown → visible (dramatic cap-rise) ─────────────────────────
+
+  it('unknown→visible: animation starts with large yOffset and alpha=0', () => {
+    const revealStart = {
+      yOffset: RISE_OFFSET_NEW,
+      columnHeight: COLUMN_MAX_HEIGHT,
+      alpha: 0,
+    };
+    const revealEnd = {
+      yOffset: 0,
+      columnHeight: COLUMN_MAX_HEIGHT,
+      alpha: 1,
+    };
+
+    // Start: cap far below, invisible
+    expect(revealStart.yOffset).toBe(RISE_OFFSET_NEW);
     expect(revealStart.alpha).toBe(0);
-    expect(revealEnd.columnHeight).toBe(COLUMN_MAX_HEIGHT);
+    // End: cap at authored height, fully visible
+    expect(revealEnd.yOffset).toBe(0);
     expect(revealEnd.alpha).toBe(1);
+    // Column height stays at max throughout (shaft hangs below cap)
+    expect(revealStart.columnHeight).toBe(COLUMN_MAX_HEIGHT);
+    expect(revealEnd.columnHeight).toBe(COLUMN_MAX_HEIGHT);
   });
 
-  it('conceal animation state mirrors reveal (no yOffset)', () => {
-    // Conceal tweens from {columnHeight: max, alpha: 1}
-    // to {columnHeight: 0, alpha: 0}. Same state shape, reversed.
-    const concealStart = { columnHeight: COLUMN_MAX_HEIGHT, alpha: 1 };
-    const concealEnd = { columnHeight: 0, alpha: 0 };
+  // ── explored → visible (gentle re-lift) ───────────────────────────
 
-    expect('yOffset' in concealStart).toBe(false);
-    expect('yOffset' in concealEnd).toBe(false);
+  it('explored→visible: animation starts with small yOffset and alpha=1', () => {
+    const reliftStart = {
+      yOffset: RISE_OFFSET_REVISIT,
+      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      alpha: 1, // Already visible as remembered — no alpha change
+    };
+    const reliftEnd = {
+      yOffset: 0,
+      columnHeight: COLUMN_MAX_HEIGHT,
+      alpha: 1,
+    };
 
-    expect(concealStart.columnHeight).toBe(COLUMN_MAX_HEIGHT);
-    expect(concealEnd.columnHeight).toBe(0);
+    // Start: slightly lowered, remembered height, fully opaque
+    expect(reliftStart.yOffset).toBe(RISE_OFFSET_REVISIT);
+    expect(reliftStart.alpha).toBe(1);
+    expect(reliftStart.columnHeight).toBe(COLUMN_REMEMBERED_HEIGHT);
+    // End: fully risen, max height, still fully opaque
+    expect(reliftEnd.yOffset).toBe(0);
+    expect(reliftEnd.alpha).toBe(1);
+    expect(reliftEnd.columnHeight).toBe(COLUMN_MAX_HEIGHT);
   });
 
-  it('coplanar constraint: tile y-position is purely y * TILE_SIZE', () => {
-    // Documents that the top cap position formula is:
-    //   targetPy = y * TILE_SIZE
-    // No column height, jitter, or animation state affects the y-position.
-    const TILE_SIZE = 32;
-    for (let y = 0; y < 10; y++) {
-      const targetPy = y * TILE_SIZE;
-      // targetPy must be deterministic from y alone
-      expect(targetPy).toBe(y * 32);
-      // Column height does NOT affect position
-      for (const _height of [0, 10, COLUMN_MAX_HEIGHT, COLUMN_MAX_HEIGHT + 2]) {
-        // The position formula is independent of height
-        const posWithHeight = y * TILE_SIZE; // height is unused
-        expect(posWithHeight).toBe(targetPy);
-      }
-    }
+  it('explored→visible has smaller yOffset than unknown→visible', () => {
+    expect(RISE_OFFSET_REVISIT).toBeLessThan(RISE_OFFSET_NEW);
+    // The difference should be significant — revisit is NOT a full reveal
+    expect(RISE_OFFSET_REVISIT).toBeLessThan(RISE_OFFSET_NEW / 2);
   });
 
-  it('height jitter affects only column shaft, not top cap position', () => {
-    // Per-tile jitter modifies the target columnHeight, not the cap position.
-    // targetColumnHeight = COLUMN_MAX_HEIGHT + heightJitter
-    // The cap stays at y * TILE_SIZE.
+  // ── visible → explored (gentle lowering, object permanence) ───────
+
+  it('visible→explored: alpha STAYS at 1 (object permanence)', () => {
+    const concealStart = {
+      yOffset: 0,
+      columnHeight: COLUMN_MAX_HEIGHT,
+      alpha: 1,
+    };
+    const concealEnd = {
+      yOffset: SINK_OFFSET,
+      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      alpha: 1, // NEVER fades to 0
+    };
+
+    // Alpha must be 1 at both start and end — object permanence preserved
+    expect(concealStart.alpha).toBe(1);
+    expect(concealEnd.alpha).toBe(1);
+    // Cap sinks slightly
+    expect(concealEnd.yOffset).toBeGreaterThan(0);
+    expect(concealEnd.yOffset).toBe(SINK_OFFSET);
+    // Column shrinks to remembered height
+    expect(concealEnd.columnHeight).toBe(COLUMN_REMEMBERED_HEIGHT);
+  });
+
+  it('visible→explored does NOT fade alpha to 0', () => {
+    // This is the key contract: conceal preserves location memory.
+    // The tile transitions from visible palette to remembered palette,
+    // but alpha stays at 1 throughout. No fade-to-black.
+    const concealEnd = { alpha: 1 };
+    expect(concealEnd.alpha).toBe(1);
+    // SINK_OFFSET is small — subtle lowering, not dramatic
+    expect(SINK_OFFSET).toBeLessThan(RISE_OFFSET_NEW);
+    expect(SINK_OFFSET).toBeLessThan(RISE_OFFSET_REVISIT);
+  });
+
+  // ── Asymmetry contract ────────────────────────────────────────────
+
+  it('three transitions have distinct offset magnitudes', () => {
+    // Dramatic > re-lift > sink
+    expect(RISE_OFFSET_NEW).toBeGreaterThan(RISE_OFFSET_REVISIT);
+    expect(RISE_OFFSET_REVISIT).toBeGreaterThan(SINK_OFFSET);
+  });
+
+  it('height jitter affects only column shaft, not yOffset', () => {
     const jitter = computeHeightJitter(3, 5);
     const targetColumnHeight = COLUMN_MAX_HEIGHT + jitter;
 
     // Jitter changes the shaft depth
     expect(targetColumnHeight).not.toBe(COLUMN_MAX_HEIGHT);
-    // But cap position is purely positional (y * TILE_SIZE)
+    // yOffset is independent of jitter (set by animation constants)
+    expect(RISE_OFFSET_NEW).toBe(56); // Fixed constant, not affected by jitter
+  });
+
+  it('cap y-position uses yOffset displacement (not pure y * TILE_SIZE)', () => {
+    // Documents that the cap position formula is now:
+    //   capY = y * TILE_SIZE + yOffset
+    // where yOffset is 0 for fully risen visible tiles and > 0 for animated/remembered.
     const TILE_SIZE = 32;
-    const capY = 5 * TILE_SIZE;
-    expect(capY).toBe(160); // 5 * 32, independent of jitter
+    const y = 5;
+    const basePy = y * TILE_SIZE;
+
+    // Fully risen (visible stable): yOffset = 0
+    expect(basePy + 0).toBe(160);
+
+    // Remembered static: yOffset = REMEMBERED_YOFFSET
+    expect(basePy + REMEMBERED_YOFFSET).toBe(160 + REMEMBERED_YOFFSET);
+
+    // During unknown→visible animation: yOffset starts at RISE_OFFSET_NEW
+    expect(basePy + RISE_OFFSET_NEW).toBe(160 + RISE_OFFSET_NEW);
   });
 });

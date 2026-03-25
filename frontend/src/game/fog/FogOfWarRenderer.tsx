@@ -1,5 +1,19 @@
 /**
- * FogOfWarRenderer — PixiJS fog-of-war renderer with columnar emergence animations.
+ * FogOfWarRenderer — PixiJS fog-of-war renderer with three-state columnar emergence.
+ *
+ * Three perceptual tile states:
+ *   1. UNKNOWN — not rendered, abyss visible.
+ *   2. EXPLORED-NOT-VISIBLE — subdued palette, slightly lowered cap (REMEMBERED_YOFFSET),
+ *      quiet, spatially legible. Preserves object permanence.
+ *   3. VISIBLE — fully risen to authored height (yOffset=0), stable, locally lit.
+ *
+ * Asymmetric transitions:
+ *   - unknown → visible: dramatic cap-rise from the abyss (large RISE_OFFSET_NEW yOffset,
+ *     alpha 0→1, ~500ms). The cap translates upward; the shaft hangs below.
+ *   - explored → visible: gentle re-lift (small RISE_OFFSET_REVISIT yOffset, alpha stays 1,
+ *     palette transitions from remembered→visible, ~250ms). NOT a full birth-from-nothing.
+ *   - visible → explored: gentle partial lowering (yOffset 0→SINK_OFFSET, palette shift to
+ *     remembered, alpha stays 1, ~350ms). Preserves location memory.
  *
  * Architecture:
  *   <pixiContainer> (camera offset applied by parent)
@@ -13,25 +27,12 @@
  * - ONLY frontier tiles (entering/exiting ~20-40) get individual Graphics for animation.
  * - After a frontier tile's animation completes, the tile transfers to a batched layer.
  *
- * Columnar emergence (ONE mode):
- * - Reveal: top cap stays pinned at y * TILE_SIZE. Shaft grows downward
- *   (columnHeight 0 → max). Alpha fades from 0 → 1. NO yOffset.
- * - Conceal: shaft shrinks upward, alpha fades out. NO yOffset.
- *   On complete, tile snaps to remembered batch.
- * - Per-tile desynchronization via computeStaggerDelay (ripple outward from player).
- * - Per-tile seeded height jitter (±2px) for irregular frontier edge.
- *
- * Exposure-aware side faces:
- * - Each tile's south/east neighbors are checked against the relevant visibility set.
- * - If the neighbor IS in the set, that edge is interior → no side face.
- * - If the neighbor is NOT in the set, that edge is exposed → side face renders.
- * - This produces seamless surfaces for interior tiles and abyss shafts at edges.
- *
  * NoiseFilter is event-driven:
  * - Starts disabled (noise=0).
  * - Activates when frontier animations are running.
  * - Deactivates (tween to 0) when the last frontier animation completes.
- * - No infinite repeat tweens.
+ * - Seed tween runs for fixed duration matching animation window, then stops.
+ *   NO infinite repeat tweens.
  */
 
 import { useRef, useCallback, useEffect } from 'react';
@@ -42,22 +43,29 @@ import { TILE_SIZE } from '../tilemap/TilemapRenderer.tsx';
 import { tileKey } from './los.ts';
 import type { FogState } from './useFogOfWar.ts';
 import {
-  drawVisibleColumn,
-  drawRememberedColumn,
-  drawVisibleColumnLocal,
+  drawVisibleShaftOnly,
+  drawVisibleCapOnly,
+  drawRememberedShaftOnly,
+  drawRememberedCapOnly,
+  drawVisibleShaftOnlyLocal,
+  drawVisibleCapOnlyLocal,
+  drawRememberedShaftOnlyLocal,
+  drawRememberedCapOnlyLocal,
   COLUMN_MAX_HEIGHT,
   COLUMN_REMEMBERED_HEIGHT,
 } from './columnRenderer.ts';
 import {
   computeStaggerDelay,
-  computeDuration,
+  computeNewRevealDuration,
+  computeRevisitRevealDuration,
+  computeConcealDuration,
   computeHeightJitter,
+  RISE_OFFSET_NEW,
+  RISE_OFFSET_REVISIT,
+  SINK_OFFSET,
+  REMEMBERED_YOFFSET,
+  MAX_STAGGER,
 } from './fogAnimationHelpers.ts';
-
-// ── Animation constants ─────────────────────────────────────────────
-
-/** Maximum random stagger delay in seconds. */
-const MAX_STAGGER = 0.15;
 
 // ── Exposure helpers ────────────────────────────────────────────────
 
@@ -150,18 +158,26 @@ export function FogOfWarRenderer({
     noiseFilterRef.current = noiseFilter;
   }, []);
 
-  // Draw all remembered (explored but not visible) tiles as a batch of short columns
+  /**
+   * Draw all remembered (explored but not visible) tiles as a batch of short columns.
+   * Remembered tiles have a small static yOffset (REMEMBERED_YOFFSET) to appear
+   * slightly lowered, signaling "seen before but not currently visible".
+   *
+   * Two-pass rendering: all shafts first (back-to-front by Y ascending),
+   * then all caps (back-to-front by Y ascending). This prevents rear shafts
+   * from bleeding through same-plane top caps.
+   */
   const drawRememberedBatch = useCallback(
     (g: Graphics, fogSt: FogState) => {
       g.clear();
       // For remembered tiles, a neighbor is "present" if it's visible OR explored
-      // (i.e., a remembered tile's south face is exposed only if the tile below
-      // is neither visible nor explored)
       const unionSet = new Set(fogSt.exploredSet);
       for (const key of fogSt.visibleSet) {
         unionSet.add(key);
       }
 
+      // Collect remembered tile coordinates and sort by Y ascending (back-to-front)
+      const tiles: { x: number; y: number; southExposed: boolean; eastExposed: boolean }[] = [];
       for (const key of fogSt.exploredSet) {
         if (fogSt.visibleSet.has(key)) continue; // Skip currently visible
         if (animatingTilesRef.current.has(key)) continue; // Skip animating
@@ -169,11 +185,29 @@ export function FogOfWarRenderer({
         const x = Number(parts[0]);
         const y = Number(parts[1]);
         const { southExposed, eastExposed } = computeExposure(x, y, unionSet);
-        drawRememberedColumn(g, map, x, y, {
-          columnHeight: COLUMN_REMEMBERED_HEIGHT,
-          southExposed,
-          eastExposed,
-        });
+        tiles.push({ x, y, southExposed, eastExposed });
+      }
+      tiles.sort((a, b) => a.y - b.y || a.x - b.x);
+
+      const config = {
+        columnHeight: COLUMN_REMEMBERED_HEIGHT,
+        southExposed: false,
+        eastExposed: false,
+        yOffset: REMEMBERED_YOFFSET,
+      };
+
+      // Pass 1: all shafts (back-to-front)
+      for (const tile of tiles) {
+        config.southExposed = tile.southExposed;
+        config.eastExposed = tile.eastExposed;
+        drawRememberedShaftOnly(g, map, tile.x, tile.y, config);
+      }
+
+      // Pass 2: all caps (back-to-front)
+      for (const tile of tiles) {
+        config.southExposed = tile.southExposed;
+        config.eastExposed = tile.eastExposed;
+        drawRememberedCapOnly(g, map, tile.x, tile.y, config);
       }
     },
     [map],
@@ -182,21 +216,47 @@ export function FogOfWarRenderer({
   /**
    * Draw visible batch: all currently visible tiles that aren't animating,
    * rendered as full-height columns with exposure-aware side faces.
+   * Visible tiles have yOffset=0 — fully risen to authored height.
+   *
+   * Two-pass rendering: all shafts first (back-to-front by Y ascending),
+   * then all caps (back-to-front by Y ascending). This prevents rear shafts
+   * from bleeding through same-plane top caps.
    */
   const drawVisibleBatch = useCallback(
     (g: Graphics, fogSt: FogState) => {
       g.clear();
+
+      // Collect visible tile coordinates and sort by Y ascending (back-to-front)
+      const tiles: { x: number; y: number; southExposed: boolean; eastExposed: boolean }[] = [];
       for (const key of fogSt.visibleSet) {
         if (animatingTilesRef.current.has(key)) continue; // Still animating
         const parts = key.split(',');
         const x = Number(parts[0]);
         const y = Number(parts[1]);
         const { southExposed, eastExposed } = computeExposure(x, y, fogSt.visibleSet);
-        drawVisibleColumn(g, map, x, y, {
-          columnHeight: COLUMN_MAX_HEIGHT,
-          southExposed,
-          eastExposed,
-        });
+        tiles.push({ x, y, southExposed, eastExposed });
+      }
+      tiles.sort((a, b) => a.y - b.y || a.x - b.x);
+
+      const config = {
+        columnHeight: COLUMN_MAX_HEIGHT,
+        southExposed: false,
+        eastExposed: false,
+        yOffset: 0,
+      };
+
+      // Pass 1: all shafts (back-to-front)
+      for (const tile of tiles) {
+        config.southExposed = tile.southExposed;
+        config.eastExposed = tile.eastExposed;
+        drawVisibleShaftOnly(g, map, tile.x, tile.y, config);
+      }
+
+      // Pass 2: all caps (back-to-front)
+      for (const tile of tiles) {
+        config.southExposed = tile.southExposed;
+        config.eastExposed = tile.eastExposed;
+        drawVisibleCapOnly(g, map, tile.x, tile.y, config);
       }
     },
     [map],
@@ -264,7 +324,9 @@ export function FogOfWarRenderer({
 
   /**
    * Activate the NoiseFilter when frontier animations begin.
-   * Starts the noise intensity tween (0 → 0.15) and a seed animation.
+   * Starts the noise intensity tween (0 → 0.15) and a FINITE seed animation.
+   * The seed tween runs for a fixed duration matching the animation window,
+   * then stops — no infinite repeat.
    */
   const activateNoise = useCallback((): void => {
     const noiseF = noiseFilterRef.current;
@@ -286,27 +348,33 @@ export function FogOfWarRenderer({
       },
     });
 
-    // Start seed animation if not already running
-    if (!noiseSeedTweenRef.current) {
-      noiseF.seed = Math.random();
-      noiseSeedTweenRef.current = gsap.to(noiseF, {
-        seed: Math.random() + 1,
-        duration: 0.8,
-        ease: 'none',
-        repeat: -1,
-        yoyo: true,
-      });
+    // Start seed animation — FINITE duration, no repeat:-1
+    if (noiseSeedTweenRef.current) {
+      noiseSeedTweenRef.current.kill();
+      noiseSeedTweenRef.current = null;
     }
+    noiseF.seed = Math.random();
+    noiseSeedTweenRef.current = gsap.to(noiseF, {
+      seed: Math.random() + 1,
+      duration: 0.8,
+      ease: 'none',
+      onComplete: () => {
+        noiseSeedTweenRef.current = null;
+      },
+    });
   }, []);
 
   /**
-   * Animate a tile reveal (entering visibility) — columnar emergence.
+   * Animate a tile reveal from UNKNOWN state (unknown → visible).
    *
-   * Top cap stays PINNED at (x * TILE_SIZE, y * TILE_SIZE) — no vertical displacement.
-   * The shaft grows downward (columnHeight 0 → max) while alpha fades from 0 → 1.
-   * On complete, removes the Graphics and redraws batched layers.
+   * Dramatic cap-rise from the abyss:
+   * - yOffset starts at RISE_OFFSET_NEW (cap far below authored height)
+   * - Animates to yOffset=0 (cap at authored height)
+   * - columnHeight = COLUMN_MAX_HEIGHT throughout (shaft hangs below cap)
+   * - Alpha fades from 0 → 1
+   * - Duration ~500ms with stagger delay
    */
-  const animateReveal = useCallback(
+  const animateRevealNew = useCallback(
     (
       x: number,
       y: number,
@@ -331,19 +399,23 @@ export function FogOfWarRenderer({
       // Compute exposure against current visible set
       const { southExposed, eastExposed } = computeExposure(x, y, visibleSet);
 
-      // Initial state: zero height, fully transparent — top cap stays pinned
-      const animState = { columnHeight: 0, alpha: 0 };
+      // Cap-rise: start far below, rise to authored height
+      const animState = {
+        yOffset: RISE_OFFSET_NEW,
+        columnHeight: targetColumnHeight,
+        alpha: 0,
+      };
 
-      // Position pinned at world coords — NEVER changes during animation
+      // Position at world coords
       tileG.x = targetPx;
       tileG.y = targetPy;
 
       frontierContainer.addChild(tileG);
 
       const delay = computeStaggerDelay(x, y, playerX, playerY, MAX_STAGGER);
-      const duration = computeDuration();
+      const duration = computeNewRevealDuration();
 
-      const onRevealComplete = () => {
+      const onComplete = () => {
         animatingTilesRef.current.delete(key);
         frontierContainer.removeChild(tileG);
         tileG.destroy();
@@ -353,21 +425,30 @@ export function FogOfWarRenderer({
       };
 
       const tween = gsap.to(animState, {
-        columnHeight: targetColumnHeight,
+        yOffset: 0,
         alpha: 1,
         duration,
         delay,
         ease: 'power2.out',
         onUpdate: () => {
           tileG.clear();
-          drawVisibleColumnLocal(tileG, map, x, y, {
+          // Two-pass: shaft first, then cap — prevents shaft bleeding through cap
+          drawVisibleShaftOnlyLocal(tileG, map, x, y, {
             columnHeight: animState.columnHeight,
             alpha: animState.alpha,
+            yOffset: animState.yOffset,
+            southExposed,
+            eastExposed,
+          });
+          drawVisibleCapOnlyLocal(tileG, map, x, y, {
+            columnHeight: animState.columnHeight,
+            alpha: animState.alpha,
+            yOffset: animState.yOffset,
             southExposed,
             eastExposed,
           });
         },
-        onComplete: onRevealComplete,
+        onComplete,
       });
       activeTweensRef.current.push(tween);
     },
@@ -375,11 +456,126 @@ export function FogOfWarRenderer({
   );
 
   /**
-   * Animate a tile conceal (exiting visibility) — columnar sinking.
+   * Animate a tile re-lift from EXPLORED state (explored → visible).
    *
-   * Top cap stays PINNED at (x * TILE_SIZE, y * TILE_SIZE) — no vertical displacement.
-   * Shaft shrinks upward (columnHeight max → 0), alpha fades from 1 → 0.
-   * On complete, tile snaps to the remembered batch layer.
+   * Gentle re-lift — NOT a full birth-from-nothing:
+   * - yOffset starts at RISE_OFFSET_REVISIT (small displacement)
+   * - Animates to yOffset=0 (fully risen)
+   * - columnHeight transitions from COLUMN_REMEMBERED_HEIGHT → COLUMN_MAX_HEIGHT
+   * - Alpha stays 1 (tile was already visible as remembered)
+   * - Duration ~250ms, shorter stagger
+   * - During animation, transitions from remembered to visible palette
+   */
+  const animateRevealRevisit = useCallback(
+    (
+      x: number,
+      y: number,
+      playerX: number,
+      playerY: number,
+      frontierContainer: Container,
+      visibleSet: Set<string>,
+    ) => {
+      const key = tileKey(x, y);
+      if (animatingTilesRef.current.has(key)) return;
+      animatingTilesRef.current.add(key);
+
+      const tileG = new Graphics();
+
+      const targetPx = x * TILE_SIZE;
+      const targetPy = y * TILE_SIZE;
+
+      const heightJitter = computeHeightJitter(x, y);
+      const targetColumnHeight = COLUMN_MAX_HEIGHT + heightJitter;
+
+      const { southExposed, eastExposed } = computeExposure(x, y, visibleSet);
+
+      // Start from remembered state — already visible, just slightly lowered
+      const animState = {
+        yOffset: RISE_OFFSET_REVISIT,
+        columnHeight: COLUMN_REMEMBERED_HEIGHT,
+        alpha: 1, // Already visible as remembered — no alpha change
+        paletteProgress: 0, // 0 = remembered palette, 1 = visible palette
+      };
+
+      tileG.x = targetPx;
+      tileG.y = targetPy;
+
+      frontierContainer.addChild(tileG);
+
+      const delay = computeStaggerDelay(x, y, playerX, playerY, MAX_STAGGER * 0.5);
+      const duration = computeRevisitRevealDuration();
+
+      const onComplete = () => {
+        animatingTilesRef.current.delete(key);
+        frontierContainer.removeChild(tileG);
+        tileG.destroy();
+        removeTweenFromActive(tween);
+        requestRedrawBatched();
+        onFrontierAnimationComplete();
+      };
+
+      const tween = gsap.to(animState, {
+        yOffset: 0,
+        columnHeight: targetColumnHeight,
+        paletteProgress: 1,
+        duration,
+        delay,
+        ease: 'power2.out',
+        onUpdate: () => {
+          tileG.clear();
+          // Blend from remembered to visible drawing based on paletteProgress
+          // Two-pass within each: shaft first, then cap
+          if (animState.paletteProgress < 0.5) {
+            // First half: draw as remembered (transitioning)
+            drawRememberedShaftOnlyLocal(tileG, map, x, y, {
+              columnHeight: animState.columnHeight,
+              alpha: animState.alpha,
+              yOffset: animState.yOffset,
+              southExposed,
+              eastExposed,
+            });
+            drawRememberedCapOnlyLocal(tileG, map, x, y, {
+              columnHeight: animState.columnHeight,
+              alpha: animState.alpha,
+              yOffset: animState.yOffset,
+              southExposed,
+              eastExposed,
+            });
+          } else {
+            // Second half: draw as visible
+            drawVisibleShaftOnlyLocal(tileG, map, x, y, {
+              columnHeight: animState.columnHeight,
+              alpha: animState.alpha,
+              yOffset: animState.yOffset,
+              southExposed,
+              eastExposed,
+            });
+            drawVisibleCapOnlyLocal(tileG, map, x, y, {
+              columnHeight: animState.columnHeight,
+              alpha: animState.alpha,
+              yOffset: animState.yOffset,
+              southExposed,
+              eastExposed,
+            });
+          }
+        },
+        onComplete,
+      });
+      activeTweensRef.current.push(tween);
+    },
+    [map, requestRedrawBatched, onFrontierAnimationComplete],
+  );
+
+  /**
+   * Animate a tile conceal (visible → explored).
+   *
+   * Gentle partial lowering — preserves object permanence:
+   * - yOffset starts at 0 (fully risen), animates to SINK_OFFSET (slightly lowered)
+   * - columnHeight shrinks from COLUMN_MAX_HEIGHT → COLUMN_REMEMBERED_HEIGHT
+   * - Alpha stays 1 — NEVER fades to 0. Object permanence preserved.
+   * - Palette transitions from visible → remembered
+   * - On complete, tile snaps to remembered batch layer (already lowered)
+   * - Duration ~350ms
    */
   const animateConceal = useCallback(
     (
@@ -399,33 +595,44 @@ export function FogOfWarRenderer({
       const targetPx = x * TILE_SIZE;
       const targetPy = y * TILE_SIZE;
 
-      // Per-tile seeded height jitter (same as reveal for consistency)
       const heightJitter = computeHeightJitter(x, y);
       const startColumnHeight = COLUMN_MAX_HEIGHT + heightJitter;
 
-      // Compute exposure against current visible set
       const { southExposed, eastExposed } = computeExposure(x, y, visibleSet);
 
-      // Initial state: fully risen, fully opaque — top cap pinned
-      const animState = { columnHeight: startColumnHeight, alpha: 1 };
+      // Start fully risen and visible
+      const animState = {
+        yOffset: 0,
+        columnHeight: startColumnHeight,
+        alpha: 1,
+        paletteProgress: 0, // 0 = visible palette, 1 = remembered palette
+      };
 
-      // Draw initial state
-      drawVisibleColumnLocal(tileG, map, x, y, {
+      // Draw initial state (two-pass: shaft first, then cap)
+      drawVisibleShaftOnlyLocal(tileG, map, x, y, {
         columnHeight: animState.columnHeight,
         alpha: animState.alpha,
+        yOffset: 0,
         southExposed,
         eastExposed,
       });
-      // Position pinned at world coords — NEVER changes
+      drawVisibleCapOnlyLocal(tileG, map, x, y, {
+        columnHeight: animState.columnHeight,
+        alpha: animState.alpha,
+        yOffset: 0,
+        southExposed,
+        eastExposed,
+      });
+
       tileG.x = targetPx;
       tileG.y = targetPy;
 
       frontierContainer.addChild(tileG);
 
       const delay = computeStaggerDelay(x, y, playerX, playerY, MAX_STAGGER);
-      const duration = computeDuration();
+      const duration = computeConcealDuration();
 
-      const onConcealComplete = () => {
+      const onComplete = () => {
         animatingTilesRef.current.delete(key);
         frontierContainer.removeChild(tileG);
         tileG.destroy();
@@ -435,21 +642,50 @@ export function FogOfWarRenderer({
       };
 
       const tween = gsap.to(animState, {
-        columnHeight: 0,
-        alpha: 0,
+        yOffset: SINK_OFFSET,
+        columnHeight: COLUMN_REMEMBERED_HEIGHT,
+        paletteProgress: 1,
+        alpha: 1, // Alpha stays 1 — object permanence
         duration,
         delay,
         ease: 'power2.in',
         onUpdate: () => {
           tileG.clear();
-          drawVisibleColumnLocal(tileG, map, x, y, {
-            columnHeight: animState.columnHeight,
-            alpha: animState.alpha,
-            southExposed,
-            eastExposed,
-          });
+          // Blend from visible to remembered palette
+          // Two-pass within each: shaft first, then cap
+          if (animState.paletteProgress < 0.5) {
+            drawVisibleShaftOnlyLocal(tileG, map, x, y, {
+              columnHeight: animState.columnHeight,
+              alpha: animState.alpha,
+              yOffset: animState.yOffset,
+              southExposed,
+              eastExposed,
+            });
+            drawVisibleCapOnlyLocal(tileG, map, x, y, {
+              columnHeight: animState.columnHeight,
+              alpha: animState.alpha,
+              yOffset: animState.yOffset,
+              southExposed,
+              eastExposed,
+            });
+          } else {
+            drawRememberedShaftOnlyLocal(tileG, map, x, y, {
+              columnHeight: animState.columnHeight,
+              alpha: animState.alpha,
+              yOffset: animState.yOffset,
+              southExposed,
+              eastExposed,
+            });
+            drawRememberedCapOnlyLocal(tileG, map, x, y, {
+              columnHeight: animState.columnHeight,
+              alpha: animState.alpha,
+              yOffset: animState.yOffset,
+              southExposed,
+              eastExposed,
+            });
+          }
         },
-        onComplete: onConcealComplete,
+        onComplete,
       });
       activeTweensRef.current.push(tween);
     },
@@ -476,16 +712,19 @@ export function FogOfWarRenderer({
     drawVisibleBatch(visibleG, fogState);
 
     // Determine if there are frontier tiles to animate
-    const hasFrontierWork = fogState.entering.length > 0 || fogState.exiting.length > 0;
+    const hasFrontierWork =
+      fogState.enteringNew.length > 0 ||
+      fogState.enteringRevisit.length > 0 ||
+      fogState.exiting.length > 0;
 
     // Activate noise only when frontier animations are starting
     if (hasFrontierWork) {
       activateNoise();
     }
 
-    // Animate entering tiles (reveal — shaft grows downward, alpha fades in)
-    for (const tile of fogState.entering) {
-      animateReveal(
+    // Animate tiles entering from UNKNOWN state (dramatic cap-rise)
+    for (const tile of fogState.enteringNew) {
+      animateRevealNew(
         tile[0],
         tile[1],
         fogState.playerX,
@@ -495,7 +734,19 @@ export function FogOfWarRenderer({
       );
     }
 
-    // Animate exiting tiles (conceal — shaft shrinks upward, alpha fades out)
+    // Animate tiles re-entering from EXPLORED state (gentle re-lift)
+    for (const tile of fogState.enteringRevisit) {
+      animateRevealRevisit(
+        tile[0],
+        tile[1],
+        fogState.playerX,
+        fogState.playerY,
+        frontierC,
+        fogState.visibleSet,
+      );
+    }
+
+    // Animate exiting tiles (visible → explored — gentle lowering)
     for (const tile of fogState.exiting) {
       animateConceal(
         tile[0],
@@ -511,7 +762,8 @@ export function FogOfWarRenderer({
     setupLayers,
     drawRememberedBatch,
     drawVisibleBatch,
-    animateReveal,
+    animateRevealNew,
+    animateRevealRevisit,
     animateConceal,
     activateNoise,
   ]);

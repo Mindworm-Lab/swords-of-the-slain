@@ -14,3 +14,19 @@ export type { FogState } from './useFogOfWar.ts';
 
 export { FogOfWarRenderer } from './FogOfWarRenderer.tsx';
 export type { FogOfWarRendererProps } from './FogOfWarRenderer.tsx';
+
+export { ABYSS_BG_COLOR } from './columnRenderer.ts';
+
+export {
+  computeStaggerDelay,
+  computeNewRevealDuration,
+  computeRevisitRevealDuration,
+  computeConcealDuration,
+  computeDuration,
+  computeHeightJitter,
+  RISE_OFFSET_NEW,
+  RISE_OFFSET_REVISIT,
+  SINK_OFFSET,
+  REMEMBERED_YOFFSET,
+  MAX_STAGGER,
+} from './fogAnimationHelpers.ts';
