@@ -1,9 +1,15 @@
 /**
  * Column tile rendering primitives for the fog-of-war system.
  *
- * Each tile is drawn as a short vertical column (top cap + front body + right edge strip)
- * rather than a flat square. This creates the visual of tiles rising from a void — the
- * signature effect of the columnar LOS reassembly fog-of-war.
+ * Each tile is drawn as a vertical column (top cap + south body face + east edge strip)
+ * rather than a flat square. Side faces are **exposure-aware**: they only render when the
+ * tile's edge is exposed to void (no visible neighbor in that direction).
+ *
+ * Interior tiles surrounded by other visible tiles render ONLY the top cap with bevels —
+ * producing a perfectly seamless surface with no gaps or false seams.
+ *
+ * Exposed edge tiles show deep abyss shafts beneath, creating the visual of a floating
+ * platform suspended over a cavernous void.
  *
  * All drawing functions are **pure** — they mutate only the Graphics object passed in.
  * Color math helpers are exported for testability.
@@ -18,17 +24,17 @@ import { TILE_SIZE } from '../tilemap/TilemapRenderer.tsx';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/** Maximum column extrusion height in pixels (fully risen). */
-export const COLUMN_MAX_HEIGHT = 12;
+/** Maximum column extrusion height in pixels (fully risen). Deep abyss shaft. */
+export const COLUMN_MAX_HEIGHT = 56;
 
-/** Remembered columns are shorter / quieter. */
-export const COLUMN_REMEMBERED_HEIGHT = 4;
+/** Remembered columns are shorter but still clearly present. */
+export const COLUMN_REMEMBERED_HEIGHT = 20;
 
 /** Width of the right-edge highlight strip on the column body. */
 export const SIDE_STRIP_WIDTH = 3;
 
 /** Number of depth-fade bands on the column body (more = smoother gradient). */
-const BODY_BANDS = 4;
+const BODY_BANDS = 10;
 
 /** Height of the contact shadow strip at the base of the column body. */
 const CONTACT_SHADOW_HEIGHT = 2;
@@ -125,6 +131,10 @@ export interface ColumnConfig {
   columnHeight: number;
   /** Opacity of the entire column (0-1). Used during fade portions of animation. */
   alpha?: number;
+  /** True if the tile's south edge is exposed to void (no visible neighbor below). */
+  southExposed?: boolean;
+  /** True if the tile's east edge is exposed to void (no visible neighbor to the right). */
+  eastExposed?: boolean;
 }
 
 // ── Internal drawing helpers ─────────────────────────────────────────────────
@@ -175,12 +185,16 @@ function rememberedColors(tileType: TileType, x: number, y: number): TileColors 
 /**
  * Draw a column at an arbitrary pixel origin (ox, oy).
  *
+ * Side faces (south body, east strip) are **exposure-aware**: they only render
+ * when the corresponding exposure flag is true. Interior tiles with no exposed
+ * edges render ONLY the top cap with bevel highlights — a perfectly seamless surface.
+ *
  * Drawing order (back to front):
- *   1. Column body (front face extrusion) with depth-fade bands
- *   2. Right-edge strip on body (lighter, suggests second face)
- *   3. Contact shadow at body base
- *   4. Top cap (the main tile surface)
- *   5. Bevel highlights on top cap edges
+ *   1. Column body (south face extrusion) — only if southExposed
+ *   2. Right-edge strip on body — only if eastExposed
+ *   3. Contact shadow at body base — only if southExposed
+ *   4. Top cap (the main tile surface) — ALWAYS
+ *   5. Bevel highlights on top cap edges — ALWAYS
  */
 function drawColumn(
   g: Graphics,
@@ -189,31 +203,33 @@ function drawColumn(
   colors: TileColors,
   config: ColumnConfig,
 ): void {
-  const { columnHeight, alpha = 1 } = config;
+  const { columnHeight, alpha = 1, southExposed = false, eastExposed = false } = config;
   const h = Math.max(0, Math.round(columnHeight));
 
-  // ── 1. Column body (front face) with depth-fade bands ──
-  if (h > 0) {
+  // ── 1. Column body (south face) with depth-fade bands ── only if exposed
+  if (h > 0 && southExposed) {
     const bands = Math.min(BODY_BANDS, h); // don't draw more bands than pixels
     const bandH = h / bands;
 
     for (let i = 0; i < bands; i++) {
       // t goes from 0 (top of body, just below cap) to 1 (bottom, deepest)
       const t = (i + 0.5) / bands;
-      const bandColor = lerpColor(colors.body, colors.abyss, t * 0.7);
+      const bandColor = lerpColor(colors.body, colors.abyss, t * 0.95);
       const by = oy + TILE_SIZE + i * bandH;
 
       g.setFillStyle({ color: bandColor, alpha });
       g.rect(ox, by, TILE_SIZE, Math.ceil(bandH));
       g.fill();
     }
+  }
 
-    // ── 2. Right-edge strip on body (slightly lighter, second face cue) ──
+  // ── 2. Right-edge strip on body (slightly lighter, second face cue) ── only if exposed
+  if (h > 0 && eastExposed) {
     const stripBands = Math.min(BODY_BANDS, h);
     const stripBandH = h / stripBands;
     for (let i = 0; i < stripBands; i++) {
       const t = (i + 0.5) / stripBands;
-      const baseBodyColor = lerpColor(colors.body, colors.abyss, t * 0.7);
+      const baseBodyColor = lerpColor(colors.body, colors.abyss, t * 0.95);
       const stripColor = adjustBrightness(baseBodyColor, 8);
       const by = oy + TILE_SIZE + i * stripBandH;
 
@@ -221,8 +237,10 @@ function drawColumn(
       g.rect(ox + TILE_SIZE - SIDE_STRIP_WIDTH, by, SIDE_STRIP_WIDTH, Math.ceil(stripBandH));
       g.fill();
     }
+  }
 
-    // ── 3. Contact shadow at body base ──
+  // ── 3. Contact shadow at body base ── only if south face is exposed
+  if (h > 0 && southExposed) {
     const shadowH = Math.min(CONTACT_SHADOW_HEIGHT, h);
     const shadowColor = lerpColor(colors.abyss, 0x000000, 0.5);
     g.setFillStyle({ color: shadowColor, alpha });
@@ -230,12 +248,12 @@ function drawColumn(
     g.fill();
   }
 
-  // ── 4. Top cap ──
+  // ── 4. Top cap ── ALWAYS drawn at (ox, oy), pinned in place
   g.setFillStyle({ color: colors.top, alpha });
   g.rect(ox, oy, TILE_SIZE, TILE_SIZE);
   g.fill();
 
-  // ── 5. Bevel highlights ──
+  // ── 5. Bevel highlights ── ALWAYS drawn
   // Top edge (light, 2px)
   g.setFillStyle({ color: colors.bevelLight, alpha });
   g.rect(ox, oy, TILE_SIZE, 2);
@@ -265,6 +283,9 @@ function drawColumn(
  * The tile at grid position (x, y) is drawn at pixel position
  * (x * TILE_SIZE, y * TILE_SIZE). Suitable for batched rendering
  * where many tiles share a single Graphics object.
+ *
+ * Side faces only render when `southExposed` / `eastExposed` are true in config.
+ * Interior tiles with no exposed edges render only the top cap + bevels.
  */
 export function drawVisibleColumn(
   g: Graphics,
@@ -286,6 +307,8 @@ export function drawVisibleColumn(
  *
  * Uses a desaturated / darkened palette to indicate the tile is no longer
  * in the player's current field of view but has been seen before.
+ *
+ * Side faces only render when `southExposed` / `eastExposed` are true in config.
  */
 export function drawRememberedColumn(
   g: Graphics,
@@ -307,6 +330,8 @@ export function drawRememberedColumn(
  *
  * For individual tile Graphics objects that are positioned via
  * container.x/y (e.g., frontier animation tiles managed by GSAP).
+ *
+ * Side faces only render when `southExposed` / `eastExposed` are true in config.
  */
 export function drawVisibleColumnLocal(
   g: Graphics,
@@ -325,6 +350,8 @@ export function drawVisibleColumnLocal(
  * Draw a **remembered-state** column tile at **local (0,0) origin**.
  *
  * For individual tile Graphics objects positioned via container transform.
+ *
+ * Side faces only render when `southExposed` / `eastExposed` are true in config.
  */
 export function drawRememberedColumnLocal(
   g: Graphics,
