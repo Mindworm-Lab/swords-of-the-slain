@@ -41,8 +41,8 @@ describe('column height constants', () => {
     expect(COLUMN_REMEMBERED_HEIGHT).toBeGreaterThan(0);
   });
 
-  it('visible columns are taller than remembered columns', () => {
-    expect(COLUMN_MAX_HEIGHT).toBeGreaterThan(COLUMN_REMEMBERED_HEIGHT);
+  it('visible columns are the same height as remembered columns (uniform shaft depth)', () => {
+    expect(COLUMN_MAX_HEIGHT).toBe(COLUMN_REMEMBERED_HEIGHT);
   });
 
   it('COLUMN_MAX_HEIGHT is a reasonable pixel value for deep abyss shafts', () => {
@@ -53,9 +53,8 @@ describe('column height constants', () => {
     expect(COLUMN_MAX_HEIGHT).toBeLessThanOrEqual(32 * 3);
   });
 
-  it('COLUMN_REMEMBERED_HEIGHT is at least 1/4 of COLUMN_MAX_HEIGHT', () => {
-    // Remembered columns should still be visually present, not invisible
-    expect(COLUMN_REMEMBERED_HEIGHT).toBeGreaterThanOrEqual(COLUMN_MAX_HEIGHT / 4);
+  it('COLUMN_REMEMBERED_HEIGHT equals COLUMN_MAX_HEIGHT for uniform shaft depth', () => {
+    expect(COLUMN_REMEMBERED_HEIGHT).toBe(COLUMN_MAX_HEIGHT);
   });
 
   it('COLUMN_MAX_HEIGHT exceeds TILE_SIZE (32) for bottomless abyss feel', () => {
@@ -292,7 +291,7 @@ describe('animation model contract (three-state cap-rise)', () => {
   it('explored→visible: animation starts with small yOffset and alpha=1', () => {
     const reliftStart = {
       yOffset: RISE_OFFSET_REVISIT,
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT, // Same shaft depth as visible
       alpha: 1, // Already visible as remembered — no alpha change
     };
     const reliftEnd = {
@@ -301,11 +300,11 @@ describe('animation model contract (three-state cap-rise)', () => {
       alpha: 1,
     };
 
-    // Start: slightly lowered, remembered height, fully opaque
+    // Start: slightly lowered, full shaft height, fully opaque
     expect(reliftStart.yOffset).toBe(RISE_OFFSET_REVISIT);
     expect(reliftStart.alpha).toBe(1);
-    expect(reliftStart.columnHeight).toBe(COLUMN_REMEMBERED_HEIGHT);
-    // End: fully risen, max height, still fully opaque
+    expect(reliftStart.columnHeight).toBe(COLUMN_MAX_HEIGHT);
+    // End: fully risen, same height, still fully opaque
     expect(reliftEnd.yOffset).toBe(0);
     expect(reliftEnd.alpha).toBe(1);
     expect(reliftEnd.columnHeight).toBe(COLUMN_MAX_HEIGHT);
@@ -327,7 +326,7 @@ describe('animation model contract (three-state cap-rise)', () => {
     };
     const concealEnd = {
       yOffset: SINK_OFFSET,
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT, // Shaft stays at full height
       alpha: 1, // NEVER fades to 0
     };
 
@@ -337,8 +336,8 @@ describe('animation model contract (three-state cap-rise)', () => {
     // Cap sinks slightly
     expect(concealEnd.yOffset).toBeGreaterThan(0);
     expect(concealEnd.yOffset).toBe(SINK_OFFSET);
-    // Column shrinks to remembered height
-    expect(concealEnd.columnHeight).toBe(COLUMN_REMEMBERED_HEIGHT);
+    // Column stays at full height (uniform shaft depth)
+    expect(concealEnd.columnHeight).toBe(COLUMN_MAX_HEIGHT);
   });
 
   it('visible→explored does NOT fade alpha to 0', () => {

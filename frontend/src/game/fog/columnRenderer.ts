@@ -29,8 +29,14 @@ import { TILE_SIZE } from '../tilemap/TilemapRenderer.tsx';
 /** Maximum column extrusion height in pixels (fully risen). Deep abyss shaft. */
 export const COLUMN_MAX_HEIGHT = 56;
 
-/** Remembered columns are shorter but still clearly present. */
-export const COLUMN_REMEMBERED_HEIGHT = 20;
+/**
+ * Remembered columns use the SAME shaft depth as visible columns.
+ * Visual distinction is communicated through palette (darker/desaturated) and
+ * a small yOffset (slight downward displacement) — NOT shaft height.
+ * Uniform shaft depth eliminates false z-level illusions where remembered tiles
+ * appear to sit on a different plane than visible tiles.
+ */
+export const COLUMN_REMEMBERED_HEIGHT = COLUMN_MAX_HEIGHT;
 
 /** Width of the right-edge highlight strip on the column body. */
 export const SIDE_STRIP_WIDTH = 3;

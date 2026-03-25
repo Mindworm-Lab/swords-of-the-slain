@@ -505,13 +505,8 @@ describe('column constants', () => {
     expect(COLUMN_MAX_HEIGHT).toBeLessThanOrEqual(96);
   });
 
-  it('COLUMN_REMEMBERED_HEIGHT is positive and smaller than max', () => {
-    expect(COLUMN_REMEMBERED_HEIGHT).toBeGreaterThan(0);
-    expect(COLUMN_REMEMBERED_HEIGHT).toBeLessThan(COLUMN_MAX_HEIGHT);
-  });
-
-  it('COLUMN_REMEMBERED_HEIGHT is at least 16 for visible presence', () => {
-    expect(COLUMN_REMEMBERED_HEIGHT).toBeGreaterThanOrEqual(16);
+  it('COLUMN_REMEMBERED_HEIGHT equals COLUMN_MAX_HEIGHT (uniform shaft depth)', () => {
+    expect(COLUMN_REMEMBERED_HEIGHT).toBe(COLUMN_MAX_HEIGHT);
   });
 
   it('SIDE_STRIP_WIDTH is positive', () => {
@@ -589,7 +584,7 @@ describe('interior tiles (no exposed edges)', () => {
     const g = mockGraphics();
     const map = floorMap();
     drawRememberedColumn(g as never, map, 1, 1, {
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT,
       southExposed: false,
       eastExposed: false,
     });
@@ -606,7 +601,7 @@ describe('interior tiles (no exposed edges)', () => {
       eastExposed: false,
     });
     drawRememberedColumn(gRem as never, map, 1, 1, {
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT,
       southExposed: false,
       eastExposed: false,
     });
@@ -740,9 +735,9 @@ describe('fully exposed tiles (both edges)', () => {
   it('remembered fully-exposed also draws all faces', () => {
     const g = mockGraphics();
     const map = floorMap();
-    const strips = expectedStripCount(COLUMN_REMEMBERED_HEIGHT);
+    const strips = expectedStripCount(COLUMN_MAX_HEIGHT);
     drawRememberedColumn(g as never, map, 1, 1, {
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT,
       southExposed: true,
       eastExposed: true,
     });
@@ -921,7 +916,7 @@ describe('drawRememberedColumn', () => {
     const g = mockGraphics();
     const map = floorMap();
     expect(() =>
-      drawRememberedColumn(g as never, map, 0, 0, { columnHeight: COLUMN_REMEMBERED_HEIGHT }),
+      drawRememberedColumn(g as never, map, 0, 0, { columnHeight: COLUMN_MAX_HEIGHT }),
     ).not.toThrow();
   });
 
@@ -1001,9 +996,9 @@ describe('drawRememberedColumnLocal', () => {
   it('passes through exposure flags', () => {
     const g = mockGraphics();
     const map = floorMap(10, 10);
-    const strips = expectedStripCount(COLUMN_REMEMBERED_HEIGHT);
+    const strips = expectedStripCount(COLUMN_MAX_HEIGHT);
     drawRememberedColumnLocal(g as never, map, 5, 5, {
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT,
       southExposed: false,
       eastExposed: true,
     });
@@ -1120,7 +1115,7 @@ describe('yOffset (cap-rise animation)', () => {
     const g = mockGraphics();
     const map = floorMap(10, 10);
     drawRememberedColumn(g as never, map, 2, 3, {
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT,
       yOffset: 10,
     });
     // Cap should be at oy + yOffset
@@ -1316,9 +1311,9 @@ describe('two-pass drawing: shaft-only and cap-only', () => {
   it('remembered shaft-only works', () => {
     const g = mockGraphics();
     const map = floorMap(10, 10);
-    const strips = expectedStripCount(COLUMN_REMEMBERED_HEIGHT);
+    const strips = expectedStripCount(COLUMN_MAX_HEIGHT);
     drawRememberedShaftOnly(g as never, map, 1, 1, {
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT,
       southExposed: true,
       eastExposed: false,
     });
@@ -1330,7 +1325,7 @@ describe('two-pass drawing: shaft-only and cap-only', () => {
     const g = mockGraphics();
     const map = floorMap(10, 10);
     drawRememberedCapOnly(g as never, map, 1, 1, {
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT,
     });
     expect(g.rect.mock.calls.length).toBe(5);
   });
@@ -1363,7 +1358,7 @@ describe('two-pass drawing: shaft-only and cap-only', () => {
     const map = floorMap(10, 10);
     expect(() =>
       drawRememberedShaftOnlyLocal(g as never, map, 3, 3, {
-        columnHeight: COLUMN_REMEMBERED_HEIGHT,
+        columnHeight: COLUMN_MAX_HEIGHT,
         southExposed: true,
         eastExposed: true,
       }),
@@ -1375,7 +1370,7 @@ describe('two-pass drawing: shaft-only and cap-only', () => {
     const g = mockGraphics();
     const map = floorMap(10, 10);
     drawRememberedCapOnlyLocal(g as never, map, 3, 3, {
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT,
     });
     expect(g.rect.mock.calls.length).toBe(5);
   });
@@ -1564,7 +1559,7 @@ describe('two-pass draw order: occlusion guarantee', () => {
     const g = mockGraphics();
     const map = floorMap(10, 10);
     const config: ColumnConfig = {
-      columnHeight: COLUMN_REMEMBERED_HEIGHT,
+      columnHeight: COLUMN_MAX_HEIGHT,
       southExposed: true,
       eastExposed: true,
     };
