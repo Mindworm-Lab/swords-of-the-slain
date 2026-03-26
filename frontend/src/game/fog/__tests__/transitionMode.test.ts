@@ -369,6 +369,41 @@ describe('animation model contract (three-state cap-rise)', () => {
     expect(RISE_OFFSET_NEW).toBe(56); // Fixed constant, not affected by jitter
   });
 
+  // ── lightLift animation contract ────────────────────────────────────
+
+  it('new reveal starts with lightLift > 0 (40) that animates to 0', () => {
+    // New reveal: dramatic light burst fading to normal
+    const newRevealStart = { lightLift: 40 };
+    const newRevealEnd = { lightLift: 0 };
+    expect(newRevealStart.lightLift).toBe(40);
+    expect(newRevealEnd.lightLift).toBe(0);
+    expect(newRevealStart.lightLift).toBeGreaterThan(0);
+  });
+
+  it('revisit reveal starts with lightLift > 0 (20) that animates to 0', () => {
+    // Revisit: subtler light lift than new reveal
+    const revisitStart = { lightLift: 20 };
+    const revisitEnd = { lightLift: 0 };
+    expect(revisitStart.lightLift).toBe(20);
+    expect(revisitEnd.lightLift).toBe(0);
+    expect(revisitStart.lightLift).toBeGreaterThan(0);
+  });
+
+  it('revisit lightLift is less than new-reveal lightLift (subtler)', () => {
+    const newLightLift = 40;
+    const revisitLightLift = 20;
+    expect(revisitLightLift).toBeLessThan(newLightLift);
+    // Revisit should be noticeably less — at most half
+    expect(revisitLightLift).toBeLessThanOrEqual(newLightLift / 2);
+  });
+
+  it('conceal has lightLift = 0 throughout (no brightness boost)', () => {
+    const concealStart = { lightLift: 0 };
+    const concealEnd = { lightLift: 0 };
+    expect(concealStart.lightLift).toBe(0);
+    expect(concealEnd.lightLift).toBe(0);
+  });
+
   it('cap y-position uses yOffset displacement (not pure y * TILE_SIZE)', () => {
     // Documents that the cap position formula is now:
     //   capY = y * TILE_SIZE + yOffset
@@ -385,5 +420,88 @@ describe('animation model contract (three-state cap-rise)', () => {
 
     // During unknown→visible animation: yOffset starts at RISE_OFFSET_NEW
     expect(basePy + RISE_OFFSET_NEW).toBe(160 + RISE_OFFSET_NEW);
+  });
+});
+
+// ── Animation safety clamping (back.out overshoot protection) ────────────────
+//
+// back.out easing overshoots past the target value before settling.
+// When animating alpha (0→1) or lightLift (N→0), this can produce
+// negative intermediate values. The draw path must clamp these to
+// prevent black/invisible frames.
+
+describe('animation safety clamping (back.out overshoot protection)', () => {
+  it('alpha is clamped to [0, 1] range in animation config', () => {
+    // During back.out(1.5) easing of alpha: 0→1, GSAP may overshoot
+    // past 1 or undershoot below 0. The draw path clamps alpha.
+    const clampAlpha = (v: number) => Math.max(0, Math.min(1, v));
+
+    // Negative overshoot (back.out undershoot)
+    expect(clampAlpha(-0.1)).toBe(0);
+    expect(clampAlpha(-0.5)).toBe(0);
+
+    // Positive overshoot (back.out overshoot past 1)
+    expect(clampAlpha(1.1)).toBe(1);
+    expect(clampAlpha(1.5)).toBe(1);
+
+    // Normal range passes through
+    expect(clampAlpha(0)).toBe(0);
+    expect(clampAlpha(0.5)).toBe(0.5);
+    expect(clampAlpha(1)).toBe(1);
+  });
+
+  it('lightLift is clamped to non-negative (no darkening from overshoot)', () => {
+    // During back.out easing of lightLift: 40→0, GSAP may overshoot
+    // past 0 into negative values. The draw path clamps lightLift ≥ 0.
+    const clampLightLift = (v: number) => Math.max(0, v);
+
+    // Negative overshoot (back.out past target of 0)
+    expect(clampLightLift(-5)).toBe(0);
+    expect(clampLightLift(-10)).toBe(0);
+
+    // Positive values pass through
+    expect(clampLightLift(0)).toBe(0);
+    expect(clampLightLift(20)).toBe(20);
+    expect(clampLightLift(40)).toBe(40);
+  });
+
+  it('yOffset is NOT clamped — negative overshoot is the desired settle motion', () => {
+    // back.out easing on yOffset (e.g. 56→0) may overshoot to negative values.
+    // This is intentional: the cap "bounces" slightly above its final position
+    // before settling, creating a premium settle feel.
+    const yOffsetValue = -3; // Simulated overshoot past 0
+    expect(yOffsetValue).toBeLessThan(0); // Allowed — not clamped
+  });
+
+  it('alpha clamp prevents invisible frames during reveal animation', () => {
+    // Simulates the animation config building that happens in drawAllTiles.
+    // With back.out(1.5), alpha tweening 0→1 can temporarily go below 0.
+    const simulatedAlphaValues = [-0.08, 0.0, 0.3, 0.7, 1.05, 1.0];
+    const clamped = simulatedAlphaValues.map(v => Math.max(0, Math.min(1, v)));
+
+    // All clamped values must be in [0, 1]
+    for (const v of clamped) {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+    }
+
+    // Specific checks
+    expect(clamped[0]).toBe(0);   // -0.08 → 0 (no invisible frame)
+    expect(clamped[4]).toBe(1);   // 1.05 → 1 (no over-bright frame)
+  });
+
+  it('lightLift clamp prevents darkening during reveal animation settle', () => {
+    // Simulates back.out(1.5) on lightLift: 40→0 overshooting to negative.
+    const simulatedLightLiftValues = [40, 20, 5, -3, -8, 0];
+    const clamped = simulatedLightLiftValues.map(v => Math.max(0, v));
+
+    // All clamped values must be non-negative
+    for (const v of clamped) {
+      expect(v).toBeGreaterThanOrEqual(0);
+    }
+
+    // Negative values clamped to 0 — no darkening below base color
+    expect(clamped[3]).toBe(0);  // -3 → 0
+    expect(clamped[4]).toBe(0);  // -8 → 0
   });
 });

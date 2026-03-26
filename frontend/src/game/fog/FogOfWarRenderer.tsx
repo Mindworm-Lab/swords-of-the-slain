@@ -1,5 +1,5 @@
 import { useRef, useCallback, useEffect } from 'react';
-import { Container, Graphics, NoiseFilter } from 'pixi.js';
+import { Container, Graphics } from 'pixi.js';
 import { gsap } from 'gsap';
 import type { GameMap } from '../tilemap/types.ts';
 import { tileKey } from './los.ts';
@@ -36,6 +36,7 @@ interface AnimState {
   type: 'new' | 'revisit' | 'conceal';
   southExposed: boolean;
   eastExposed: boolean;
+  lightLift: number;
 }
 
 // ── Exposure helpers ────────────────────────────────────────────────
@@ -71,9 +72,6 @@ export function FogOfWarRenderer({
   const animatingTilesRef = useRef<Map<string, AnimState>>(new Map());
   const prevFogRef = useRef<FogState | null>(null);
   
-  const noiseFilterRef = useRef<NoiseFilter | null>(null);
-  const noiseSeedTweenRef = useRef<gsap.core.Tween | null>(null);
-  const noiseIntensityTweenRef = useRef<gsap.core.Tween | null>(null);
   const redrawRequestedRef = useRef(false);
 
   const setupLayers = useCallback((parentContainer: Container) => {
@@ -82,13 +80,6 @@ export function FogOfWarRenderer({
     const mainG = new Graphics();
     parentContainer.addChild(mainG);
     mainGraphicsRef.current = mainG;
-
-    const noiseFilter = new NoiseFilter({
-      noise: 0,
-      seed: Math.random(),
-    });
-    mainG.filters = [noiseFilter];
-    noiseFilterRef.current = noiseFilter;
   }, []);
 
   const drawAllTiles = useCallback(
@@ -166,10 +157,11 @@ export function FogOfWarRenderer({
         } else if (tile.state === 'animating' && tile.anim) {
           config = {
             columnHeight: tile.anim.columnHeight,
-            alpha: tile.anim.alpha,
+            alpha: Math.max(0, Math.min(1, tile.anim.alpha)),
             yOffset: tile.anim.yOffset,
             southExposed: tile.southExposed,
             eastExposed: tile.eastExposed,
+            lightLift: tile.anim.lightLift || 0,
           };
           if (tile.anim.type === 'revisit' && tile.anim.paletteProgress < 0.5) {
             useRemembered = true;
@@ -214,61 +206,11 @@ export function FogOfWarRenderer({
 
   const onFrontierAnimationComplete = useCallback((): void => {
     if (animatingTilesRef.current.size === 0) {
-      const noiseF = noiseFilterRef.current;
-      if (!noiseF) return;
-
-      if (noiseIntensityTweenRef.current) {
-        noiseIntensityTweenRef.current.kill();
-        noiseIntensityTweenRef.current = null;
-      }
-
-      noiseIntensityTweenRef.current = gsap.to(noiseF, {
-        noise: 0,
-        duration: 0.3,
-        ease: 'power2.out',
-        onComplete: () => {
-          noiseIntensityTweenRef.current = null;
-          if (noiseSeedTweenRef.current) {
-            noiseSeedTweenRef.current.kill();
-            noiseSeedTweenRef.current = null;
-          }
-        },
-      });
+      // Animation sequence complete
     }
   }, []);
 
-  const activateNoise = useCallback((): void => {
-    const noiseF = noiseFilterRef.current;
-    if (!noiseF) return;
 
-    if (noiseIntensityTweenRef.current) {
-      noiseIntensityTweenRef.current.kill();
-      noiseIntensityTweenRef.current = null;
-    }
-
-    noiseIntensityTweenRef.current = gsap.to(noiseF, {
-      noise: 0.15,
-      duration: 0.1,
-      ease: 'power2.in',
-      onComplete: () => {
-        noiseIntensityTweenRef.current = null;
-      },
-    });
-
-    if (noiseSeedTweenRef.current) {
-      noiseSeedTweenRef.current.kill();
-      noiseSeedTweenRef.current = null;
-    }
-    noiseF.seed = Math.random();
-    noiseSeedTweenRef.current = gsap.to(noiseF, {
-      seed: Math.random() + 1,
-      duration: 0.8,
-      ease: 'none',
-      onComplete: () => {
-        noiseSeedTweenRef.current = null;
-      },
-    });
-  }, []);
 
   const animateRevealNew = useCallback(
     (x: number, y: number, playerX: number, playerY: number, visibleSet: Set<string>) => {
@@ -288,6 +230,7 @@ export function FogOfWarRenderer({
         type: 'new',
         southExposed,
         eastExposed,
+        lightLift: 40,
       };
 
       animatingTilesRef.current.set(key, animState);
@@ -304,10 +247,11 @@ export function FogOfWarRenderer({
 
       const tween = gsap.to(animState, {
         yOffset: 0,
+        lightLift: 0,
         alpha: 1,
         duration,
         delay,
-        ease: 'power2.out',
+        ease: 'back.out(1.5)',
         onUpdate: requestRedraw,
         onComplete,
       });
@@ -334,6 +278,7 @@ export function FogOfWarRenderer({
         type: 'revisit',
         southExposed,
         eastExposed,
+        lightLift: 20,
       };
 
       animatingTilesRef.current.set(key, animState);
@@ -350,10 +295,11 @@ export function FogOfWarRenderer({
 
       const tween = gsap.to(animState, {
         yOffset: 0,
+        lightLift: 0,
         paletteProgress: 1,
         duration,
         delay,
-        ease: 'power2.out',
+        ease: 'back.out(1.2)',
         onUpdate: requestRedraw,
         onComplete,
       });
@@ -380,6 +326,7 @@ export function FogOfWarRenderer({
         type: 'conceal',
         southExposed,
         eastExposed,
+        lightLift: 0,
       };
 
       animatingTilesRef.current.set(key, animState);
@@ -422,15 +369,6 @@ export function FogOfWarRenderer({
 
     requestRedraw();
 
-    const hasFrontierWork =
-      fogState.enteringNew.length > 0 ||
-      fogState.enteringRevisit.length > 0 ||
-      fogState.exiting.length > 0;
-
-    if (hasFrontierWork) {
-      activateNoise();
-    }
-
     for (const tile of fogState.enteringNew) {
       animateRevealNew(tile[0], tile[1], fogState.playerX, fogState.playerY, fogState.visibleSet);
     }
@@ -449,7 +387,6 @@ export function FogOfWarRenderer({
     animateRevealNew,
     animateRevealRevisit,
     animateConceal,
-    activateNoise,
   ]);
 
   useEffect(() => {
@@ -461,14 +398,6 @@ export function FogOfWarRenderer({
       }
       activeTweensRef.current = [];
       animating.clear();
-      if (noiseSeedTweenRef.current) {
-        noiseSeedTweenRef.current.kill();
-        noiseSeedTweenRef.current = null;
-      }
-      if (noiseIntensityTweenRef.current) {
-        noiseIntensityTweenRef.current.kill();
-        noiseIntensityTweenRef.current = null;
-      }
     };
   }, []);
 

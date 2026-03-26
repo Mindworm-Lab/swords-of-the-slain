@@ -283,6 +283,8 @@ export interface ColumnConfig {
    * The shaft always hangs below the cap, so the entire column shifts down.
    */
   yOffset?: number;
+  /** Extra brightness added to the cap during reveal animations. */
+  lightLift?: number;
 }
 
 // ── Internal drawing helpers ─────────────────────────────────────────────────
@@ -418,32 +420,43 @@ export function drawColumnCapOnly(
   colors: TileColors,
   config: ColumnConfig,
 ): void {
-  const { alpha = 1, yOffset = 0 } = config;
+  const { alpha = 1, yOffset = 0, lightLift: rawLift = 0 } = config;
+  const lightLift = Math.max(0, rawLift);
   const capY = oy + yOffset;
 
+  let topColor = colors.top;
+  let lightBevel = colors.bevelLight;
+  let darkBevel = colors.bevelDark;
+
+  if (lightLift > 0) {
+    topColor = adjustBrightness(topColor, lightLift);
+    lightBevel = adjustBrightness(lightBevel, lightLift);
+    darkBevel = adjustBrightness(darkBevel, lightLift);
+  }
+
   // ── Top cap ── drawn at (ox, capY)
-  g.setFillStyle({ color: colors.top, alpha });
+  g.setFillStyle({ color: topColor, alpha });
   g.rect(ox, capY, TILE_SIZE, TILE_SIZE);
   g.fill();
 
   // ── Bevel highlights ──
   // Top edge (light, 2px)
-  g.setFillStyle({ color: colors.bevelLight, alpha });
+  g.setFillStyle({ color: lightBevel, alpha });
   g.rect(ox, capY, TILE_SIZE, 2);
   g.fill();
 
   // Left edge (light, 2px)
-  g.setFillStyle({ color: colors.bevelLight, alpha });
+  g.setFillStyle({ color: lightBevel, alpha });
   g.rect(ox, capY, 2, TILE_SIZE);
   g.fill();
 
   // Bottom edge (dark, 1px)
-  g.setFillStyle({ color: colors.bevelDark, alpha });
+  g.setFillStyle({ color: darkBevel, alpha });
   g.rect(ox, capY + TILE_SIZE - 1, TILE_SIZE, 1);
   g.fill();
 
   // Right edge (dark, 1px)
-  g.setFillStyle({ color: colors.bevelDark, alpha });
+  g.setFillStyle({ color: darkBevel, alpha });
   g.rect(ox + TILE_SIZE - 1, capY, 1, TILE_SIZE);
   g.fill();
 }

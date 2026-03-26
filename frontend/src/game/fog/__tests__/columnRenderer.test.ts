@@ -1388,6 +1388,69 @@ describe('two-pass drawing: shaft-only and cap-only', () => {
     expect(firstRect[1]).toBe(1 * 32 + 20 + 32);
   });
 
+  it('lightLift > 0 produces brighter cap colors than lightLift = 0', () => {
+    const gLifted = mockGraphics();
+    const gNormal = mockGraphics();
+    const map = floorMap(10, 10);
+    drawVisibleCapOnly(gLifted as never, map, 1, 1, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: 30,
+    });
+    drawVisibleCapOnly(gNormal as never, map, 1, 1, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: 0,
+    });
+    // Same number of draw calls (cap + 4 bevels)
+    expect(gLifted.rect.mock.calls.length).toBe(5);
+    expect(gNormal.rect.mock.calls.length).toBe(5);
+
+    // Compare cap fill colors — lifted should be brighter
+    const liftedCapColor = (gLifted.setFillStyle.mock.calls[0] as unknown[])[0] as { color: number };
+    const normalCapColor = (gNormal.setFillStyle.mock.calls[0] as unknown[])[0] as { color: number };
+    expect(brightness(liftedCapColor.color)).toBeGreaterThan(brightness(normalCapColor.color));
+  });
+
+  it('lightLift = 0 (default) leaves cap colors unchanged', () => {
+    const gExplicit = mockGraphics();
+    const gDefault = mockGraphics();
+    const map = floorMap(10, 10);
+    drawVisibleCapOnly(gExplicit as never, map, 2, 2, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: 0,
+    });
+    drawVisibleCapOnly(gDefault as never, map, 2, 2, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+    });
+    // Colors should be identical when lightLift is 0 vs omitted
+    for (let i = 0; i < gExplicit.setFillStyle.mock.calls.length; i++) {
+      const a = (gExplicit.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      const b = (gDefault.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      expect(a.color).toBe(b.color);
+    }
+  });
+
+  it('lightLift affects ONLY the cap, not the shaft', () => {
+    const gLifted = mockGraphics();
+    const gNormal = mockGraphics();
+    const map = floorMap(10, 10);
+    const baseConfig = {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      southExposed: true as const,
+      eastExposed: true as const,
+    };
+    // Draw shafts with and without lightLift
+    drawVisibleShaftOnly(gLifted as never, map, 1, 1, { ...baseConfig, lightLift: 40 });
+    drawVisibleShaftOnly(gNormal as never, map, 1, 1, { ...baseConfig, lightLift: 0 });
+
+    // Shaft draw calls should be identical regardless of lightLift
+    expect(gLifted.rect.mock.calls.length).toBe(gNormal.rect.mock.calls.length);
+    for (let i = 0; i < gLifted.setFillStyle.mock.calls.length; i++) {
+      const a = (gLifted.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      const b = (gNormal.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      expect(a.color).toBe(b.color);
+    }
+  });
+
   it('two-pass cap respects yOffset', () => {
     const g = mockGraphics();
     const map = floorMap(10, 10);
@@ -1655,5 +1718,98 @@ describe('two-pass draw order: occlusion guarantee', () => {
     // First rect of Y=5 shaft: body at (3*32, 5*32 + 32)
     const y5FirstRect = g.rect.mock.calls[afterY1Shaft] as number[];
     expect(y5FirstRect[1]).toBe(5 * 32 + 32);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// lightLift clamping — back.out overshoot safety
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('lightLift clamping (back.out overshoot safety)', () => {
+  it('negative lightLift is clamped to zero — produces identical colors as lightLift=0', () => {
+    const gNegative = mockGraphics();
+    const gZero = mockGraphics();
+    const map = floorMap(10, 10);
+
+    drawVisibleCapOnly(gNegative as never, map, 1, 1, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: -10,
+    });
+    drawVisibleCapOnly(gZero as never, map, 1, 1, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: 0,
+    });
+
+    // Same number of draw calls
+    expect(gNegative.setFillStyle.mock.calls.length).toBe(gZero.setFillStyle.mock.calls.length);
+
+    // Every fill color must be identical — no darkening from negative overshoot
+    for (let i = 0; i < gNegative.setFillStyle.mock.calls.length; i++) {
+      const negColor = (gNegative.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      const zeroColor = (gZero.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      expect(negColor.color).toBe(zeroColor.color);
+    }
+  });
+
+  it('large negative lightLift (-50) is clamped — no darkening below base palette', () => {
+    const gNegative = mockGraphics();
+    const gZero = mockGraphics();
+    const map = floorMap(10, 10);
+
+    drawVisibleCapOnly(gNegative as never, map, 3, 3, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: -50,
+    });
+    drawVisibleCapOnly(gZero as never, map, 3, 3, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: 0,
+    });
+
+    for (let i = 0; i < gNegative.setFillStyle.mock.calls.length; i++) {
+      const negColor = (gNegative.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      const zeroColor = (gZero.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      expect(negColor.color).toBe(zeroColor.color);
+    }
+  });
+
+  it('negative lightLift on remembered cap is also clamped to zero', () => {
+    const gNegative = mockGraphics();
+    const gZero = mockGraphics();
+    const map = floorMap(10, 10);
+
+    drawRememberedCapOnly(gNegative as never, map, 2, 2, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: -15,
+    });
+    drawRememberedCapOnly(gZero as never, map, 2, 2, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: 0,
+    });
+
+    for (let i = 0; i < gNegative.setFillStyle.mock.calls.length; i++) {
+      const negColor = (gNegative.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      const zeroColor = (gZero.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      expect(negColor.color).toBe(zeroColor.color);
+    }
+  });
+
+  it('positive lightLift still brightens as expected (clamping only affects negatives)', () => {
+    const gPositive = mockGraphics();
+    const gZero = mockGraphics();
+    const map = floorMap(10, 10);
+
+    drawVisibleCapOnly(gPositive as never, map, 1, 1, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: 30,
+    });
+    drawVisibleCapOnly(gZero as never, map, 1, 1, {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      lightLift: 0,
+    });
+
+    // Cap color with positive lift should be brighter
+    const positiveCapColor = (gPositive.setFillStyle.mock.calls[0] as unknown[])[0] as { color: number };
+    const zeroCapColor = (gZero.setFillStyle.mock.calls[0] as unknown[])[0] as { color: number };
+    expect(brightness(positiveCapColor.color)).toBeGreaterThan(brightness(zeroCapColor.color));
   });
 });
