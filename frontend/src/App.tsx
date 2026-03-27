@@ -62,6 +62,10 @@ function GameWorld({ dungeon, onFogUpdate }: GameWorldProps) {
       <FogOfWarRenderer
         map={dungeon.map}
         fogState={fogState}
+        cameraX={cameraX}
+        cameraY={cameraY}
+        viewportWidth={vpWidth}
+        viewportHeight={vpHeight}
       />
       <PlayerRenderer tileX={playerX} tileY={playerY} />
     </pixiContainer>
@@ -110,6 +114,7 @@ const App: React.FC = () => {
           playerX={fogState.playerX}
           playerY={fogState.playerY}
           map={dungeon.map}
+          fogGeneration={fogState.fogGeneration}
         />
       )}
     </div>

@@ -14,6 +14,8 @@ export type { FogState } from './useFogOfWar.ts';
 
 export { FogOfWarRenderer } from './FogOfWarRenderer.tsx';
 export type { FogOfWarRendererProps } from './FogOfWarRenderer.tsx';
+export { computeViewportBounds } from './FogOfWarRenderer.tsx';
+export type { ViewportBounds } from './FogOfWarRenderer.tsx';
 
 export { ABYSS_BG_COLOR, clearColorCaches } from './columnRenderer.ts';
 

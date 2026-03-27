@@ -12,6 +12,7 @@ import type { GameMap } from '../../tilemap/types.ts';
 import { computeLOS, tileKey } from '../los.ts';
 import { diffVisibility } from '../losUtils.ts';
 import { VISION_RADIUS } from '../useFogOfWar.ts';
+import { computeViewportBounds } from '../FogOfWarRenderer.tsx';
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -52,6 +53,88 @@ function corridorMap(): GameMap {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
+
+// ── computeViewportBounds tests ─────────────────────────────────────
+
+describe('computeViewportBounds', () => {
+  // TILE_SIZE = 32, CULL_MARGIN = 3
+
+  it('computes correct bounds for a known camera position and viewport size', () => {
+    // camera at (-320, -320), viewport 1024x768
+    // minTileX = floor(320/32) - 3 = 10 - 3 = 7
+    // maxTileX = ceil((320+1024)/32) + 3 = ceil(42) + 3 = 45
+    // minTileY = floor(320/32) - 3 = 10 - 3 = 7
+    // maxTileY = ceil((320+768)/32) + 3 = ceil(34) + 3 = 37
+    const bounds = computeViewportBounds(-320, -320, 1024, 768);
+    expect(bounds.minTileX).toBe(7);
+    expect(bounds.maxTileX).toBe(45);
+    expect(bounds.minTileY).toBe(7);
+    expect(bounds.maxTileY).toBe(37);
+  });
+
+  it('handles negative camera values (normal case — camera offset centers player)', () => {
+    // camera at (-160, -96), viewport 640x480
+    // minTileX = floor(160/32) - 3 = 5 - 3 = 2
+    // maxTileX = ceil((160+640)/32) + 3 = ceil(25) + 3 = 28
+    // minTileY = floor(96/32) - 3 = 3 - 3 = 0
+    // maxTileY = ceil((96+480)/32) + 3 = ceil(18) + 3 = 21
+    const bounds = computeViewportBounds(-160, -96, 640, 480);
+    expect(bounds.minTileX).toBe(2);
+    expect(bounds.maxTileX).toBe(28);
+    expect(bounds.minTileY).toBe(0);
+    expect(bounds.maxTileY).toBe(21);
+  });
+
+  it('applies CULL_MARGIN of 3 tiles on each side', () => {
+    // camera at (0, 0), viewport 320x320 (exactly 10x10 tiles)
+    // Without margin: minTileX=0, maxTileX=10, minTileY=0, maxTileY=10
+    // With margin:    minTileX=-3, maxTileX=13, minTileY=-3, maxTileY=13
+    const bounds = computeViewportBounds(0, 0, 320, 320);
+    expect(bounds.minTileX).toBe(-3);
+    expect(bounds.maxTileX).toBe(13);
+    expect(bounds.minTileY).toBe(-3);
+    expect(bounds.maxTileY).toBe(13);
+  });
+
+  it('small viewport produces tight bounds', () => {
+    // camera at (-64, -64), viewport 64x64 (2x2 tiles)
+    // minTileX = floor(64/32) - 3 = 2 - 3 = -1
+    // maxTileX = ceil((64+64)/32) + 3 = ceil(4) + 3 = 7
+    // minTileY = floor(64/32) - 3 = 2 - 3 = -1
+    // maxTileY = ceil((64+64)/32) + 3 = ceil(4) + 3 = 7
+    const bounds = computeViewportBounds(-64, -64, 64, 64);
+    expect(bounds.minTileX).toBe(-1);
+    expect(bounds.maxTileX).toBe(7);
+    expect(bounds.minTileY).toBe(-1);
+    expect(bounds.maxTileY).toBe(7);
+  });
+
+  it('large viewport produces wider bounds', () => {
+    // camera at (-640, -480), viewport 1920x1080
+    // minTileX = floor(640/32) - 3 = 20 - 3 = 17
+    // maxTileX = ceil((640+1920)/32) + 3 = ceil(80) + 3 = 83
+    // minTileY = floor(480/32) - 3 = 15 - 3 = 12
+    // maxTileY = ceil((480+1080)/32) + 3 = ceil(48.75) + 3 = 49 + 3 = 52
+    const bounds = computeViewportBounds(-640, -480, 1920, 1080);
+    expect(bounds.minTileX).toBe(17);
+    expect(bounds.maxTileX).toBe(83);
+    expect(bounds.minTileY).toBe(12);
+    expect(bounds.maxTileY).toBe(52);
+  });
+
+  it('camera at origin with zero viewport returns just margin area', () => {
+    // camera at (0, 0), viewport 0x0
+    // minTileX = floor(0/32) - 3 = 0 - 3 = -3
+    // maxTileX = ceil(0/32) + 3 = 0 + 3 = 3
+    // minTileY = floor(0/32) - 3 = 0 - 3 = -3
+    // maxTileY = ceil(0/32) + 3 = 0 + 3 = 3
+    const bounds = computeViewportBounds(0, 0, 0, 0);
+    expect(bounds.minTileX).toBe(-3);
+    expect(bounds.maxTileX).toBe(3);
+    expect(bounds.minTileY).toBe(-3);
+    expect(bounds.maxTileY).toBe(3);
+  });
+});
 
 describe('useFogOfWar logic', () => {
   describe('initial LOS computation', () => {

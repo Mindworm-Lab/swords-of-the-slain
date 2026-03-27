@@ -55,6 +55,11 @@ export interface FogState {
   playerX: number;
   /** Player position when this state was computed. */
   playerY: number;
+  /**
+   * Monotonically increasing counter that increments on each fog update.
+   * Used to signal changes to ref-stable exploredSet without copying it.
+   */
+  fogGeneration: number;
 }
 
 /**
@@ -80,6 +85,7 @@ function computeInitialFogState(
     stable: [],
     playerX,
     playerY,
+    fogGeneration: 0,
   };
 }
 
@@ -103,8 +109,10 @@ export function useFogOfWar(
   playerY: number,
 ): FogState {
   // Store the explored set in a ref so it persists across renders without
-  // causing re-render cycles (we copy it into state when it changes).
+  // causing re-render cycles. The Set is ref-stable and grows monotonically;
+  // a generation counter signals changes without copying.
   const exploredRef = useRef<Set<number>>(new Set());
+  const generationRef = useRef(0);
 
   // Memoize the initial state computation
   const initialState = useMemo(
@@ -144,9 +152,11 @@ export function useFogOfWar(
 
       prevVisibleRef.current = los.visibleSet;
 
+      generationRef.current += 1;
+
       setFogState({
         visibleSet: los.visibleSet,
-        exploredSet: new Set(explored), // Snapshot for React
+        exploredSet: explored, // Ref-stable, grows monotonically
         entering: diff.entering,
         enteringNew: diff.enteringNew,
         enteringRevisit: diff.enteringRevisit,
@@ -154,6 +164,7 @@ export function useFogOfWar(
         stable: diff.stable,
         playerX: px,
         playerY: py,
+        fogGeneration: generationRef.current,
       });
     },
     [map],

@@ -33,6 +33,8 @@ export interface MinimapProps {
   playerX: number;
   /** Player tile Y position. */
   playerY: number;
+  /** Fog generation counter — triggers redraw when exploredSet mutates in place. */
+  fogGeneration: number;
 }
 
 /** Display size of the minimap in CSS pixels. */
@@ -55,6 +57,7 @@ export const Minimap: React.FC<MinimapProps> = ({
   visibleSet,
   playerX,
   playerY,
+  fogGeneration,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -136,7 +139,7 @@ export const Minimap: React.FC<MinimapProps> = ({
 
     // 5. Single putImageData call writes all pixels at once.
     ctx.putImageData(imageData, 0, 0);
-  }, [map, exploredSet, visibleSet, playerX, playerY]);
+  }, [map, exploredSet, visibleSet, playerX, playerY, fogGeneration]);
 
   return (
     <canvas

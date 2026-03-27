@@ -25,6 +25,8 @@ export interface HUDProps {
   playerY: number;
   /** The game map data. */
   map: GameMap;
+  /** Fog generation counter — triggers Minimap redraws when exploredSet changes. */
+  fogGeneration: number;
 }
 
 /** Shared panel styling for HUD elements. */
@@ -41,6 +43,7 @@ export const HUD: React.FC<HUDProps> = ({
   playerX,
   playerY,
   map,
+  fogGeneration,
 }) => {
   return (
     <div
@@ -125,6 +128,7 @@ export const HUD: React.FC<HUDProps> = ({
           visibleSet={visibleSet}
           playerX={playerX}
           playerY={playerY}
+          fogGeneration={fogGeneration}
         />
       </div>
     </div>

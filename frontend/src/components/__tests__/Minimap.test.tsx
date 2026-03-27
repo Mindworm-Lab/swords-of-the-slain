@@ -33,6 +33,7 @@ describe('Minimap', () => {
         visibleSet={new Set()}
         playerX={1}
         playerY={1}
+        fogGeneration={0}
       />,
     );
 
@@ -52,6 +53,7 @@ describe('Minimap', () => {
         visibleSet={new Set()}
         playerX={1}
         playerY={1}
+        fogGeneration={0}
       />,
     );
 
@@ -70,6 +72,7 @@ describe('Minimap', () => {
         visibleSet={new Set()}
         playerX={1}
         playerY={1}
+        fogGeneration={0}
       />,
     );
 
@@ -88,6 +91,7 @@ describe('Minimap', () => {
         visibleSet={visible}
         playerX={1}
         playerY={1}
+        fogGeneration={0}
       />,
     );
 
@@ -99,6 +103,7 @@ describe('Minimap', () => {
         visibleSet={visible}
         playerX={2}
         playerY={2}
+        fogGeneration={1}
       />,
     );
 

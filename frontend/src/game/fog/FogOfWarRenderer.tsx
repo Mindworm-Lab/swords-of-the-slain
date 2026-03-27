@@ -1,7 +1,26 @@
+/**
+ * FogOfWarRenderer — Renders fog-of-war columns using a SINGLE Graphics object
+ * with unified depth-sorted 2-pass rendering (all shafts, then all caps).
+ *
+ * Architecture:
+ * - ONE PixiJS Graphics object for ALL tile states (remembered, visible, animating).
+ * - 2-pass draw: Pass 1 draws all shafts back-to-front, Pass 2 draws all caps
+ *   back-to-front. This ensures caps always render on top of shafts from deeper
+ *   tiles, regardless of tile state — eliminating cross-layer z-order artifacts.
+ * - Viewport culling: only tiles within the visible screen area (+ margin) are drawn,
+ *   making render cost proportional to viewport size (~400-600 tiles), not total
+ *   explored area.
+ * - GSAP tweens animate AnimState objects; a single rAF-coalesced requestRedraw()
+ *   redraws everything.
+ *
+ * PixiJS v8 Graphics API: setFillStyle → rect/poly → fill (NOT beginFill/drawRect).
+ */
+
 import { useRef, useCallback, useEffect } from 'react';
 import { Container, Graphics } from 'pixi.js';
 import { gsap } from 'gsap';
 import type { GameMap } from '../tilemap/types.ts';
+import { TILE_SIZE } from '../tilemap/TilemapRenderer.tsx';
 import { tileKey, tileKeyX, tileKeyY } from './los.ts';
 import type { FogState } from './useFogOfWar.ts';
 import {
@@ -39,13 +58,45 @@ interface AnimState {
   lightLift: number;
 }
 
-/** Tile descriptor used for depth-sorted drawing within a single layer. */
+/** Tile descriptor used for depth-sorted drawing. */
 interface TileEntry {
   x: number;
   y: number;
   southExposed: boolean;
   eastExposed: boolean;
   anim?: AnimState;
+  state: 'remembered' | 'visible' | 'animating';
+}
+
+// ── Viewport culling ────────────────────────────────────────────────
+
+/** Margin in tiles beyond the viewport edge to include in culling. */
+const CULL_MARGIN = 3;
+
+/** Viewport bounds in tile coordinates. */
+export interface ViewportBounds {
+  minTileX: number;
+  maxTileX: number;
+  minTileY: number;
+  maxTileY: number;
+}
+
+/**
+ * Compute the tile bounding box for the visible viewport.
+ * Exported as a pure function for testing.
+ */
+export function computeViewportBounds(
+  cameraX: number,
+  cameraY: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): ViewportBounds {
+  return {
+    minTileX: Math.floor(-cameraX / TILE_SIZE) - CULL_MARGIN,
+    maxTileX: Math.ceil((-cameraX + viewportWidth) / TILE_SIZE) + CULL_MARGIN,
+    minTileY: Math.floor(-cameraY / TILE_SIZE) - CULL_MARGIN,
+    maxTileY: Math.ceil((-cameraY + viewportHeight) / TILE_SIZE) + CULL_MARGIN,
+  };
 }
 
 // ── Depth sort comparator ───────────────────────────────────────────
@@ -75,215 +126,207 @@ function computeExposure(
 export interface FogOfWarRendererProps {
   map: GameMap;
   fogState: FogState;
+  cameraX: number;
+  cameraY: number;
+  viewportWidth: number;
+  viewportHeight: number;
 }
 
 export function FogOfWarRenderer({
   map,
   fogState,
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight,
 }: FogOfWarRendererProps): React.JSX.Element {
   const containerRef = useRef<Container | null>(null);
-
-  // 3-layer Graphics refs (back-to-front: remembered, animating, visible)
-  const rememberedGRef = useRef<Graphics | null>(null);
-  const animatingGRef = useRef<Graphics | null>(null);
-  const visibleGRef = useRef<Graphics | null>(null);
+  const graphicsRef = useRef<Graphics | null>(null);
 
   const activeTweensRef = useRef<gsap.core.Tween[]>([]);
   const animatingTilesRef = useRef<Map<number, AnimState>>(new Map());
   const prevFogRef = useRef<FogState | null>(null);
 
-  const animRedrawRequestedRef = useRef(false);
-  const staticRedrawRequestedRef = useRef(false);
+  const redrawRequestedRef = useRef(false);
+  const unionSetRef = useRef<Set<number>>(new Set());
 
-  // ── Layer setup ─────────────────────────────────────────────────
+  // Store camera in a ref so drawAll can access current values without stale closures
+  const cameraRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  cameraRef.current = { x: cameraX, y: cameraY, w: viewportWidth, h: viewportHeight };
 
-  const setupLayers = useCallback((parentContainer: Container) => {
-    if (rememberedGRef.current) return;
+  // ── Graphics setup ──────────────────────────────────────────────
 
-    const rememberedG = new Graphics();
-    const animatingG = new Graphics();
-    const visibleG = new Graphics();
+  const setupGraphics = useCallback((parentContainer: Container) => {
+    if (graphicsRef.current) return;
 
-    // Add in back-to-front order: remembered → animating → visible
-    parentContainer.addChild(rememberedG);
-    parentContainer.addChild(animatingG);
-    parentContainer.addChild(visibleG);
-
-    rememberedGRef.current = rememberedG;
-    animatingGRef.current = animatingG;
-    visibleGRef.current = visibleG;
+    const g = new Graphics();
+    parentContainer.addChild(g);
+    graphicsRef.current = g;
   }, []);
 
-  // ── Static layer: remembered (explored-not-visible) ─────────────
+  // ── Unified draw function ───────────────────────────────────────
 
-  const drawStaticRemembered = useCallback(
+  /**
+   * Draw ALL tiles (remembered, visible, animating) into a single Graphics object.
+   * Uses 2-pass rendering: all shafts back-to-front, then all caps back-to-front.
+   * This guarantees correct z-ordering regardless of tile state.
+   */
+  const drawAll = useCallback(
     (g: Graphics, fogSt: FogState) => {
       g.clear();
 
-      // Build union set for exposure calculation (explored + visible)
-      const unionSet = new Set(fogSt.exploredSet);
-      for (const key of fogSt.visibleSet) {
-        unionSet.add(key);
-      }
+      // Compute viewport bounds for culling
+      const cam = cameraRef.current;
+      const bounds = computeViewportBounds(cam.x, cam.y, cam.w, cam.h);
+      const { minTileX, maxTileX, minTileY, maxTileY } = bounds;
+
+      // Use cached union set for exposure calculation on remembered tiles
+      // (rebuilt only when fogState changes, not on every animation frame)
+      const unionSet = unionSetRef.current;
 
       const tiles: TileEntry[] = [];
 
+      // ── Collect remembered tiles (explored - visible - animating), viewport-culled ──
       for (const key of fogSt.exploredSet) {
         if (fogSt.visibleSet.has(key)) continue;
         if (animatingTilesRef.current.has(key)) continue;
         const x = tileKeyX(key);
         const y = tileKeyY(key);
+        if (x < minTileX || x > maxTileX || y < minTileY || y > maxTileY) continue;
         const { southExposed, eastExposed } = computeExposure(x, y, unionSet);
-        tiles.push({ x, y, southExposed, eastExposed });
+        tiles.push({ x, y, southExposed, eastExposed, state: 'remembered' });
       }
 
-      tiles.sort(depthSort);
-
-      const config = {
-        columnHeight: COLUMN_MAX_HEIGHT,
-        southExposed: false,
-        eastExposed: false,
-        yOffset: REMEMBERED_YOFFSET,
-      };
-
-      for (const tile of tiles) {
-        config.southExposed = tile.southExposed;
-        config.eastExposed = tile.eastExposed;
-        drawRememberedShaftOnly(g, map, tile.x, tile.y, config);
-        drawRememberedCapOnly(g, map, tile.x, tile.y, config);
-      }
-    },
-    [map],
-  );
-
-  // ── Static layer: visible (stable visible tiles) ────────────────
-
-  const drawStaticVisible = useCallback(
-    (g: Graphics, fogSt: FogState) => {
-      g.clear();
-
-      const tiles: TileEntry[] = [];
-
+      // ── Collect visible tiles (not animating), viewport-culled ──
       for (const key of fogSt.visibleSet) {
         if (animatingTilesRef.current.has(key)) continue;
         const x = tileKeyX(key);
         const y = tileKeyY(key);
+        if (x < minTileX || x > maxTileX || y < minTileY || y > maxTileY) continue;
         const { southExposed, eastExposed } = computeExposure(x, y, fogSt.visibleSet);
-        tiles.push({ x, y, southExposed, eastExposed });
+        tiles.push({ x, y, southExposed, eastExposed, state: 'visible' });
       }
 
-      tiles.sort(depthSort);
-
-      const config = {
-        columnHeight: COLUMN_MAX_HEIGHT,
-        southExposed: false,
-        eastExposed: false,
-        yOffset: 0,
-      };
-
-      for (const tile of tiles) {
-        config.southExposed = tile.southExposed;
-        config.eastExposed = tile.eastExposed;
-        drawVisibleShaftOnly(g, map, tile.x, tile.y, config);
-        drawVisibleCapOnly(g, map, tile.x, tile.y, config);
-      }
-    },
-    [map],
-  );
-
-  // ── Animation layer: only animating tiles ───────────────────────
-
-  const drawAnimating = useCallback(
-    (g: Graphics) => {
-      g.clear();
-
-      if (animatingTilesRef.current.size === 0) return;
-
-      const tiles: TileEntry[] = [];
+      // ── Collect animating tiles, viewport-culled ──
       for (const anim of animatingTilesRef.current.values()) {
+        if (anim.x < minTileX || anim.x > maxTileX || anim.y < minTileY || anim.y > maxTileY) continue;
         tiles.push({
           x: anim.x,
           y: anim.y,
           southExposed: anim.southExposed,
           eastExposed: anim.eastExposed,
           anim,
+          state: 'animating',
         });
       }
 
       tiles.sort(depthSort);
 
+      // ── Pass 1: all shafts back-to-front ──
       for (const tile of tiles) {
-        const anim = tile.anim!;
-        const config = {
-          columnHeight: anim.columnHeight,
-          alpha: Math.max(0, Math.min(1, anim.alpha)),
-          yOffset: anim.yOffset,
-          southExposed: tile.southExposed,
-          eastExposed: tile.eastExposed,
-          lightLift: Math.max(0, anim.lightLift || 0),
-        };
-
-        let useRemembered = false;
-        if (anim.type === 'revisit' && anim.paletteProgress < 0.5) {
-          useRemembered = true;
-        } else if (anim.type === 'conceal' && anim.paletteProgress >= 0.5) {
-          useRemembered = true;
-        }
-
-        if (useRemembered) {
+        if (tile.state === 'remembered') {
+          const config = {
+            columnHeight: COLUMN_MAX_HEIGHT,
+            southExposed: tile.southExposed,
+            eastExposed: tile.eastExposed,
+            yOffset: REMEMBERED_YOFFSET,
+          };
           drawRememberedShaftOnly(g, map, tile.x, tile.y, config);
-          drawRememberedCapOnly(g, map, tile.x, tile.y, config);
-        } else {
+        } else if (tile.state === 'visible') {
+          const config = {
+            columnHeight: COLUMN_MAX_HEIGHT,
+            southExposed: tile.southExposed,
+            eastExposed: tile.eastExposed,
+            yOffset: 0,
+          };
           drawVisibleShaftOnly(g, map, tile.x, tile.y, config);
+        } else {
+          // animating
+          const anim = tile.anim!;
+          const config = {
+            columnHeight: anim.columnHeight,
+            alpha: Math.max(0, Math.min(1, anim.alpha)),
+            yOffset: anim.yOffset,
+            southExposed: tile.southExposed,
+            eastExposed: tile.eastExposed,
+            lightLift: Math.max(0, anim.lightLift || 0),
+          };
+
+          const useRemembered =
+            (anim.type === 'revisit' && anim.paletteProgress < 0.5) ||
+            (anim.type === 'conceal' && anim.paletteProgress >= 0.5);
+
+          if (useRemembered) {
+            drawRememberedShaftOnly(g, map, tile.x, tile.y, config);
+          } else {
+            drawVisibleShaftOnly(g, map, tile.x, tile.y, config);
+          }
+        }
+      }
+
+      // ── Pass 2: all caps back-to-front ──
+      for (const tile of tiles) {
+        if (tile.state === 'remembered') {
+          const config = {
+            columnHeight: COLUMN_MAX_HEIGHT,
+            southExposed: tile.southExposed,
+            eastExposed: tile.eastExposed,
+            yOffset: REMEMBERED_YOFFSET,
+          };
+          drawRememberedCapOnly(g, map, tile.x, tile.y, config);
+        } else if (tile.state === 'visible') {
+          const config = {
+            columnHeight: COLUMN_MAX_HEIGHT,
+            southExposed: tile.southExposed,
+            eastExposed: tile.eastExposed,
+            yOffset: 0,
+          };
           drawVisibleCapOnly(g, map, tile.x, tile.y, config);
+        } else {
+          // animating
+          const anim = tile.anim!;
+          const config = {
+            columnHeight: anim.columnHeight,
+            alpha: Math.max(0, Math.min(1, anim.alpha)),
+            yOffset: anim.yOffset,
+            southExposed: tile.southExposed,
+            eastExposed: tile.eastExposed,
+            lightLift: Math.max(0, anim.lightLift || 0),
+          };
+
+          const useRemembered =
+            (anim.type === 'revisit' && anim.paletteProgress < 0.5) ||
+            (anim.type === 'conceal' && anim.paletteProgress >= 0.5);
+
+          if (useRemembered) {
+            drawRememberedCapOnly(g, map, tile.x, tile.y, config);
+          } else {
+            drawVisibleCapOnly(g, map, tile.x, tile.y, config);
+          }
         }
       }
     },
     [map],
   );
 
-  // ── Redraw request functions ────────────────────────────────────
+  // ── Redraw request (rAF coalesced) ──────────────────────────────
 
   /**
-   * Request redraw of ONLY the animating layer.
-   * Called by GSAP onUpdate — this is the hot path during animations.
-   * Only ~20-40 animating tiles are redrawn per frame, not the entire map.
+   * Request a full redraw. Uses rAF coalescing so multiple calls per frame
+   * (e.g., from multiple GSAP onUpdate callbacks) only produce one draw.
+   * This is the ONLY redraw function — used by both fogState changes and
+   * GSAP animation updates.
    */
-  const requestAnimRedraw = useCallback((): void => {
-    if (animRedrawRequestedRef.current) return;
-    animRedrawRequestedRef.current = true;
+  const requestRedraw = useCallback((): void => {
+    if (redrawRequestedRef.current) return;
+    redrawRequestedRef.current = true;
     requestAnimationFrame(() => {
-      animRedrawRequestedRef.current = false;
-      if (animatingGRef.current) {
-        drawAnimating(animatingGRef.current);
-      }
-    });
-  }, [drawAnimating]);
-
-  /**
-   * Request redraw of both static layers AND the animating layer.
-   * Called when fogState changes or when an animation completes
-   * (tiles move from animating → static).
-   */
-  const requestStaticRedraw = useCallback((): void => {
-    if (staticRedrawRequestedRef.current) return;
-    staticRedrawRequestedRef.current = true;
-    requestAnimationFrame(() => {
-      staticRedrawRequestedRef.current = false;
+      redrawRequestedRef.current = false;
       const currentFog = prevFogRef.current;
-      if (!currentFog) return;
-      if (rememberedGRef.current) {
-        drawStaticRemembered(rememberedGRef.current, currentFog);
-      }
-      if (visibleGRef.current) {
-        drawStaticVisible(visibleGRef.current, currentFog);
-      }
-      // Also redraw animating layer since the set of animating tiles changed
-      if (animatingGRef.current) {
-        drawAnimating(animatingGRef.current);
-      }
+      if (!currentFog || !graphicsRef.current) return;
+      drawAll(graphicsRef.current, currentFog);
     });
-  }, [drawStaticRemembered, drawStaticVisible, drawAnimating]);
+  }, [drawAll]);
 
   // ── Tween management ────────────────────────────────────────────
 
@@ -296,7 +339,9 @@ export function FogOfWarRenderer({
 
   const onFrontierAnimationComplete = useCallback((): void => {
     if (animatingTilesRef.current.size === 0) {
-      // Animation sequence complete
+      // All frontier animations complete — nothing else to do.
+      // The tile was already removed from animatingTilesRef and the
+      // next requestRedraw() will pick it up from the static sets.
     }
   }, []);
 
@@ -331,7 +376,8 @@ export function FogOfWarRenderer({
       const onComplete = () => {
         animatingTilesRef.current.delete(key);
         removeTweenFromActive(tween);
-        requestStaticRedraw();
+        // Immediate redraw — tile transitions from animating→visible in same frame
+        requestRedraw();
         onFrontierAnimationComplete();
       };
 
@@ -342,12 +388,12 @@ export function FogOfWarRenderer({
         duration,
         delay,
         ease: 'back.out(1.5)',
-        onUpdate: requestAnimRedraw,
+        onUpdate: requestRedraw,
         onComplete,
       });
       activeTweensRef.current.push(tween);
     },
-    [requestAnimRedraw, requestStaticRedraw, onFrontierAnimationComplete],
+    [requestRedraw, onFrontierAnimationComplete],
   );
 
   const animateRevealRevisit = useCallback(
@@ -379,7 +425,7 @@ export function FogOfWarRenderer({
       const onComplete = () => {
         animatingTilesRef.current.delete(key);
         removeTweenFromActive(tween);
-        requestStaticRedraw();
+        requestRedraw();
         onFrontierAnimationComplete();
       };
 
@@ -390,12 +436,12 @@ export function FogOfWarRenderer({
         duration,
         delay,
         ease: 'back.out(1.2)',
-        onUpdate: requestAnimRedraw,
+        onUpdate: requestRedraw,
         onComplete,
       });
       activeTweensRef.current.push(tween);
     },
-    [requestAnimRedraw, requestStaticRedraw, onFrontierAnimationComplete],
+    [requestRedraw, onFrontierAnimationComplete],
   );
 
   const animateConceal = useCallback(
@@ -427,7 +473,7 @@ export function FogOfWarRenderer({
       const onComplete = () => {
         animatingTilesRef.current.delete(key);
         removeTweenFromActive(tween);
-        requestStaticRedraw();
+        requestRedraw();
         onFrontierAnimationComplete();
       };
 
@@ -438,12 +484,12 @@ export function FogOfWarRenderer({
         duration,
         delay,
         ease: 'power2.in',
-        onUpdate: requestAnimRedraw,
+        onUpdate: requestRedraw,
         onComplete,
       });
       activeTweensRef.current.push(tween);
     },
-    [requestAnimRedraw, requestStaticRedraw, onFrontierAnimationComplete],
+    [requestRedraw, onFrontierAnimationComplete],
   );
 
   // ── fogState change effect ──────────────────────────────────────
@@ -452,14 +498,21 @@ export function FogOfWarRenderer({
     const parent = containerRef.current;
     if (!parent) return;
 
-    setupLayers(parent);
+    setupGraphics(parent);
 
-    if (!rememberedGRef.current || !animatingGRef.current || !visibleGRef.current) return;
+    if (!graphicsRef.current) return;
 
     prevFogRef.current = fogState;
 
-    // Redraw both static layers + animating layer
-    requestStaticRedraw();
+    // Rebuild unionSet when fogState changes (not on every animation frame)
+    const union = new Set(fogState.exploredSet);
+    for (const key of fogState.visibleSet) {
+      union.add(key);
+    }
+    unionSetRef.current = union;
+
+    // Request unified redraw
+    requestRedraw();
 
     for (const tile of fogState.enteringNew) {
       animateRevealNew(tile[0], tile[1], fogState.playerX, fogState.playerY, fogState.visibleSet);
@@ -474,12 +527,20 @@ export function FogOfWarRenderer({
     }
   }, [
     fogState,
-    setupLayers,
-    requestStaticRedraw,
+    setupGraphics,
+    requestRedraw,
     animateRevealNew,
     animateRevealRevisit,
     animateConceal,
   ]);
+
+  // ── Redraw on camera/viewport changes ───────────────────────────
+
+  useEffect(() => {
+    // When camera moves (panning) or viewport resizes, we need to redraw
+    // because the set of culled tiles changes.
+    requestRedraw();
+  }, [cameraX, cameraY, viewportWidth, viewportHeight, requestRedraw]);
 
   // ── Cleanup on unmount ──────────────────────────────────────────
 
