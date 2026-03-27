@@ -28,10 +28,10 @@ export const VISION_RADIUS = 10;
 
 /** Complete fog-of-war state for a single frame/turn. */
 export interface FogState {
-  /** Set of currently visible tile keys ("x,y" format). */
-  visibleSet: Set<string>;
+  /** Set of currently visible tile keys (numeric: y * TILE_KEY_STRIDE + x). */
+  visibleSet: Set<number>;
   /** Set of all ever-explored tile keys (grows monotonically). */
-  exploredSet: Set<string>;
+  exploredSet: Set<number>;
   /**
    * All tiles becoming visible this turn (union of enteringNew + enteringRevisit).
    * @deprecated Use enteringNew / enteringRevisit for asymmetric animation.
@@ -104,7 +104,7 @@ export function useFogOfWar(
 ): FogState {
   // Store the explored set in a ref so it persists across renders without
   // causing re-render cycles (we copy it into state when it changes).
-  const exploredRef = useRef<Set<string>>(new Set());
+  const exploredRef = useRef<Set<number>>(new Set());
 
   // Memoize the initial state computation
   const initialState = useMemo(
@@ -118,7 +118,7 @@ export function useFogOfWar(
   );
 
   const [fogState, setFogState] = useState<FogState>(initialState);
-  const prevVisibleRef = useRef<Set<string>>(initialState.visibleSet);
+  const prevVisibleRef = useRef<Set<number>>(initialState.visibleSet);
 
   // Track whether this is the first render
   const isFirstRender = useRef(true);

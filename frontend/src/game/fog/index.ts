@@ -3,7 +3,7 @@
  * fog state management, and animated rendering.
  */
 
-export { computeLOS, tileKey } from './los.ts';
+export { computeLOS, tileKey, tileKeyX, tileKeyY, TILE_KEY_STRIDE } from './los.ts';
 export type { LOSResult } from './los.ts';
 
 export { diffVisibility } from './losUtils.ts';
@@ -15,7 +15,7 @@ export type { FogState } from './useFogOfWar.ts';
 export { FogOfWarRenderer } from './FogOfWarRenderer.tsx';
 export type { FogOfWarRendererProps } from './FogOfWarRenderer.tsx';
 
-export { ABYSS_BG_COLOR } from './columnRenderer.ts';
+export { ABYSS_BG_COLOR, clearColorCaches } from './columnRenderer.ts';
 
 export {
   computeStaggerDelay,

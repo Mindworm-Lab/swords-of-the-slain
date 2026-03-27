@@ -95,7 +95,7 @@ describe('useFogOfWar logic', () => {
     it('all tiles are entering on first computation', () => {
       const map = openMap(20, 20);
       const los = computeLOS(map, 10, 10, VISION_RADIUS);
-      const emptyPrev = new Set<string>();
+      const emptyPrev = new Set<number>();
       const diff = diffVisibility(emptyPrev, los.visibleSet, los.visibleTiles);
 
       expect(diff.entering.length).toBe(los.visibleTiles.length);
@@ -191,7 +191,7 @@ describe('useFogOfWar logic', () => {
       for (const key of los2.visibleSet) explored.add(key);
 
       // Remembered = explored - visible
-      const remembered = new Set<string>();
+      const remembered = new Set<number>();
       for (const key of explored) {
         if (!los2.visibleSet.has(key)) {
           remembered.add(key);
@@ -258,7 +258,7 @@ describe('useFogOfWar logic', () => {
     it('without exploredSet, all entering tiles are classified as enteringNew', () => {
       const map = openMap(20, 20);
       const los = computeLOS(map, 10, 10, VISION_RADIUS);
-      const emptyPrev = new Set<string>();
+      const emptyPrev = new Set<number>();
       const diff = diffVisibility(emptyPrev, los.visibleSet, los.visibleTiles);
 
       expect(diff.enteringNew.length).toBe(los.visibleTiles.length);
@@ -270,8 +270,8 @@ describe('useFogOfWar logic', () => {
     it('with empty exploredSet, all entering tiles are enteringNew', () => {
       const map = openMap(20, 20);
       const los = computeLOS(map, 10, 10, VISION_RADIUS);
-      const emptyPrev = new Set<string>();
-      const emptyExplored = new Set<string>();
+      const emptyPrev = new Set<number>();
+      const emptyExplored = new Set<number>();
       const diff = diffVisibility(emptyPrev, los.visibleSet, los.visibleTiles, emptyExplored);
 
       expect(diff.enteringNew.length).toBe(los.visibleTiles.length);

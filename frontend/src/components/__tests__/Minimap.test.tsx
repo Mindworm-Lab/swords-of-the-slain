@@ -7,6 +7,7 @@ import { render, screen } from '@testing-library/react';
 import { Minimap } from '../Minimap.tsx';
 import { TileType } from '../../game/tilemap/types.ts';
 import type { GameMap } from '../../game/tilemap/types.ts';
+import { tileKey } from '../../game/fog/los.ts';
 
 /** Creates a simple 4x4 test map with a floor interior and wall border. */
 function createTestMap(): GameMap {
@@ -42,7 +43,7 @@ describe('Minimap', () => {
 
   it('renders with correct CSS sizing', () => {
     const map = createTestMap();
-    const explored = new Set(['1,1', '2,2']);
+    const explored = new Set([tileKey(1, 1), tileKey(2, 2)]);
 
     render(
       <Minimap
@@ -78,7 +79,7 @@ describe('Minimap', () => {
 
   it('re-renders when player position changes', () => {
     const map = createTestMap();
-    const visible = new Set(['1,1', '2,2']);
+    const visible = new Set([tileKey(1, 1), tileKey(2, 2)]);
 
     const { rerender } = render(
       <Minimap

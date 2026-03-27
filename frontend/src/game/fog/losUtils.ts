@@ -10,7 +10,7 @@
  * - exiting: tiles going visible → explored (preserve object permanence)
  */
 
-import { tileKey } from './los.ts';
+import { tileKey, tileKeyX, tileKeyY } from './los.ts';
 
 /** Diff between two visibility states. */
 export interface VisibilityDiff {
@@ -46,10 +46,10 @@ export interface VisibilityDiff {
  * @returns VisibilityDiff with entering (+ new/revisit), exiting, and stable tile arrays
  */
 export function diffVisibility(
-  previous: Set<string>,
-  current: Set<string>,
+  previous: Set<number>,
+  current: Set<number>,
   currentTiles: [number, number][],
-  exploredSet?: Set<string>,
+  exploredSet?: Set<number>,
 ): VisibilityDiff {
   const entering: [number, number][] = [];
   const enteringNew: [number, number][] = [];
@@ -81,10 +81,7 @@ export function diffVisibility(
   // Find exiting tiles (in previous but not in current)
   for (const key of previous) {
     if (!current.has(key)) {
-      const parts = key.split(',');
-      const x = Number(parts[0]);
-      const y = Number(parts[1]);
-      exiting.push([x, y]);
+      exiting.push([tileKeyX(key), tileKeyY(key)]);
     }
   }
 

@@ -1,0 +1,4 @@
+
+> swords-of-the-slain-frontend@0.1.0 build
+> tsc -b && vite build
+

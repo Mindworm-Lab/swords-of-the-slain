@@ -307,38 +307,147 @@ function stripCount(h: number): number {
   return Math.max(1, Math.ceil(h / STRIP_HEIGHT));
 }
 
-/** Resolve tile colors for visible state. */
+// ── Color caches ─────────────────────────────────────────────────────────────
+
+/**
+ * Cache for visibleColors results, keyed by (tileType * 100_000_000 + y * 10_000 + x).
+ * Entries never expire — visibleColors is a pure function of immutable inputs.
+ */
+const visibleColorsCache = new Map<number, TileColors>();
+
+/**
+ * Cache for rememberedColors results, keyed identically to visibleColorsCache.
+ */
+const rememberedColorsCache = new Map<number, TileColors>();
+
+/**
+ * Cache for pre-computed south-face strip color arrays.
+ * Key: bodyColor * 100_000_000 + tileY * 10_000 + tileX.
+ * Value: array of strip colors for each strip index.
+ */
+const southStripCache = new Map<number, number[]>();
+
+/**
+ * Cache for pre-computed east-face strip color arrays.
+ * Key: bodyColor * 100_000_000 + tileY * 10_000 + tileX.
+ * Value: array of adjusted strip colors for each strip index.
+ */
+const eastStripCache = new Map<number, number[]>();
+
+/** Cache key for tile color lookups: tileType * 100_000_000 + y * 10_000 + x. */
+function colorCacheKey(tileType: number, x: number, y: number): number {
+  return tileType * 100_000_000 + y * 10_000 + x;
+}
+
+/** Cache key for strip color lookups: bodyColor * 100_000_000 + tileY * 10_000 + tileX. */
+function stripCacheKey(bodyColor: number, tileX: number, tileY: number): number {
+  return bodyColor * 100_000_000 + tileY * 10_000 + tileX;
+}
+
+/**
+ * Clear all color caches. Useful for testing or when tile data changes.
+ */
+export function clearColorCaches(): void {
+  visibleColorsCache.clear();
+  rememberedColorsCache.clear();
+  southStripCache.clear();
+  eastStripCache.clear();
+}
+
+/** Resolve tile colors for visible state (cached). */
 function visibleColors(tileType: TileType, x: number, y: number): TileColors {
+  const key = colorCacheKey(tileType, x, y);
+  let cached = visibleColorsCache.get(key);
+  if (cached) return cached;
+
   const isWall = tileType === TileType.Wall;
   const topBase = isWall ? WALL_TOP : FLOOR_TOP;
   const bodyBase = isWall ? WALL_BODY : FLOOR_BODY;
 
   const top = jitterColor(topBase, x, y, VISIBLE_JITTER_AMP);
   const body = jitterColor(bodyBase, x, y, VISIBLE_JITTER_AMP);
-  return {
+  cached = {
     top,
     body,
     abyss: ABYSS_COLOR,
     bevelLight: adjustBrightness(top, BEVEL_LIGHT_OFFSET),
     bevelDark: adjustBrightness(top, BEVEL_DARK_OFFSET),
   };
+  visibleColorsCache.set(key, cached);
+  return cached;
 }
 
-/** Resolve tile colors for remembered state. */
+/** Resolve tile colors for remembered state (cached). */
 function rememberedColors(tileType: TileType, x: number, y: number): TileColors {
+  const key = colorCacheKey(tileType, x, y);
+  let cached = rememberedColorsCache.get(key);
+  if (cached) return cached;
+
   const isWall = tileType === TileType.Wall;
   const topBase = isWall ? REM_WALL_TOP : REM_FLOOR_TOP;
   const bodyBase = isWall ? REM_WALL_BODY : REM_FLOOR_BODY;
 
   const top = jitterColor(topBase, x, y, REMEMBERED_JITTER_AMP);
   const body = jitterColor(bodyBase, x, y, REMEMBERED_JITTER_AMP);
-  return {
+  cached = {
     top,
     body,
     abyss: ABYSS_COLOR,
     bevelLight: adjustBrightness(top, REM_BEVEL_LIGHT_OFFSET),
     bevelDark: adjustBrightness(top, REM_BEVEL_DARK_OFFSET),
   };
+  rememberedColorsCache.set(key, cached);
+  return cached;
+}
+
+/**
+ * Get (or compute and cache) the south-face strip colors for a tile.
+ * Returns an array of pre-computed colors, one per strip.
+ */
+function getSouthStripColors(
+  bodyColor: number,
+  abyssColor: number,
+  tileX: number,
+  tileY: number,
+  numStrips: number,
+): number[] {
+  const key = stripCacheKey(bodyColor, tileX, tileY);
+  const cached = southStripCache.get(key);
+  if (cached && cached.length === numStrips) return cached;
+
+  const colors = new Array<number>(numStrips);
+  for (let i = 0; i < numStrips; i++) {
+    const t = (i + 0.5) / numStrips;
+    colors[i] = volumetricStripColor(bodyColor, abyssColor, t, tileX, tileY, i);
+  }
+  southStripCache.set(key, colors);
+  return colors;
+}
+
+/**
+ * Get (or compute and cache) the east-face strip colors for a tile.
+ * East strips use stripIndex + 1000 and an additional +8 brightness adjustment.
+ * Returns an array of pre-computed colors, one per strip.
+ */
+function getEastStripColors(
+  bodyColor: number,
+  abyssColor: number,
+  tileX: number,
+  tileY: number,
+  numStrips: number,
+): number[] {
+  const key = stripCacheKey(bodyColor, tileX, tileY);
+  const cached = eastStripCache.get(key);
+  if (cached && cached.length === numStrips) return cached;
+
+  const colors = new Array<number>(numStrips);
+  for (let i = 0; i < numStrips; i++) {
+    const t = (i + 0.5) / numStrips;
+    const baseColor = volumetricStripColor(bodyColor, abyssColor, t, tileX, tileY, i + 1000);
+    colors[i] = adjustBrightness(baseColor, 8);
+  }
+  eastStripCache.set(key, colors);
+  return colors;
 }
 
 /**
@@ -368,13 +477,11 @@ export function drawColumnShaftOnly(
   if (h > 0 && southExposed) {
     const strips = stripCount(h);
     const stripH = h / strips;
+    const southColors = getSouthStripColors(colors.body, colors.abyss, tileX, tileY, strips);
 
     for (let i = 0; i < strips; i++) {
-      const t = (i + 0.5) / strips;
-      const color = volumetricStripColor(colors.body, colors.abyss, t, tileX, tileY, i);
       const by = capY + TILE_SIZE + i * stripH;
-
-      g.setFillStyle({ color, alpha });
+      g.setFillStyle({ color: southColors[i]!, alpha });
       g.rect(ox, by, TILE_SIZE, Math.ceil(stripH));
       g.fill();
     }
@@ -384,14 +491,11 @@ export function drawColumnShaftOnly(
   if (h > 0 && eastExposed) {
     const strips = stripCount(h);
     const stripH = h / strips;
+    const eastColors = getEastStripColors(colors.body, colors.abyss, tileX, tileY, strips);
 
     for (let i = 0; i < strips; i++) {
-      const t = (i + 0.5) / strips;
-      const baseColor = volumetricStripColor(colors.body, colors.abyss, t, tileX, tileY, i + 1000);
-      const color = adjustBrightness(baseColor, 8);
       const by = capY + TILE_SIZE + i * stripH;
-
-      g.setFillStyle({ color, alpha });
+      g.setFillStyle({ color: eastColors[i]!, alpha });
       g.rect(ox + TILE_SIZE - SIDE_STRIP_WIDTH, by, SIDE_STRIP_WIDTH, Math.ceil(stripH));
       g.fill();
     }

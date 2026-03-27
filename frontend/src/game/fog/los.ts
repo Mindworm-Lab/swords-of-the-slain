@@ -10,22 +10,48 @@
 
 import { type GameMap, isInBounds, isWall } from '../../game/tilemap/types.ts';
 
+/**
+ * Stride used for numeric tile key encoding.
+ * Must be larger than any realistic map dimension.
+ * key = y * TILE_KEY_STRIDE + x
+ */
+export const TILE_KEY_STRIDE = 10000;
+
 /** Result of a line-of-sight computation. */
 export interface LOSResult {
-  /** Set of visible tile keys in "x,y" format for fast lookup */
-  visibleSet: Set<string>;
+  /** Set of visible tile keys (numeric: y * TILE_KEY_STRIDE + x) for fast lookup */
+  visibleSet: Set<number>;
   /** Array of [x, y] tuples of visible tiles */
   visibleTiles: [number, number][];
 }
 
 /**
- * Create a string key for a tile coordinate, used for Set membership.
+ * Create a numeric key for a tile coordinate, used for Set membership.
+ * Encodes (x, y) as a single integer: y * TILE_KEY_STRIDE + x.
  * @param x - Tile x coordinate
  * @param y - Tile y coordinate
- * @returns String key in "x,y" format
+ * @returns Numeric key
  */
-export function tileKey(x: number, y: number): string {
-  return `${x},${y}`;
+export function tileKey(x: number, y: number): number {
+  return y * TILE_KEY_STRIDE + x;
+}
+
+/**
+ * Extract the x coordinate from a numeric tile key.
+ * @param key - Numeric tile key (y * TILE_KEY_STRIDE + x)
+ * @returns Tile x coordinate
+ */
+export function tileKeyX(key: number): number {
+  return key % TILE_KEY_STRIDE;
+}
+
+/**
+ * Extract the y coordinate from a numeric tile key.
+ * @param key - Numeric tile key (y * TILE_KEY_STRIDE + x)
+ * @returns Tile y coordinate
+ */
+export function tileKeyY(key: number): number {
+  return Math.floor(key / TILE_KEY_STRIDE);
 }
 
 /**
@@ -64,7 +90,7 @@ export function computeLOS(
   originY: number,
   radius: number = 10,
 ): LOSResult {
-  const visibleSet = new Set<string>();
+  const visibleSet = new Set<number>();
   const visibleTiles: [number, number][] = [];
 
   // Helper to mark a tile as visible (deduplicates via Set)

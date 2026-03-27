@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeLOS, tileKey } from '../los.ts';
+import { computeLOS, tileKey, tileKeyX, tileKeyY, TILE_KEY_STRIDE } from '../los.ts';
 import { diffVisibility } from '../losUtils.ts';
 import { type GameMap, TileType } from '../../../game/tilemap/types.ts';
 
@@ -26,10 +26,23 @@ function createMapWithWalls(
 }
 
 describe('tileKey', () => {
-  it('produces "x,y" format', () => {
-    expect(tileKey(3, 7)).toBe('3,7');
-    expect(tileKey(0, 0)).toBe('0,0');
-    expect(tileKey(100, 200)).toBe('100,200');
+  it('produces numeric encoding y * TILE_KEY_STRIDE + x', () => {
+    expect(tileKey(3, 7)).toBe(7 * TILE_KEY_STRIDE + 3);
+    expect(tileKey(0, 0)).toBe(0);
+    expect(tileKey(100, 200)).toBe(200 * TILE_KEY_STRIDE + 100);
+  });
+
+  it('round-trips through tileKeyX and tileKeyY', () => {
+    const pairs: [number, number][] = [[0, 0], [3, 7], [100, 200], [9999, 9999]];
+    for (const [x, y] of pairs) {
+      const key = tileKey(x, y);
+      expect(tileKeyX(key)).toBe(x);
+      expect(tileKeyY(key)).toBe(y);
+    }
+  });
+
+  it('TILE_KEY_STRIDE is 10000', () => {
+    expect(TILE_KEY_STRIDE).toBe(10000);
   });
 });
 
@@ -230,7 +243,7 @@ describe('computeLOS', () => {
 
 describe('diffVisibility', () => {
   it('all entering when previous is empty', () => {
-    const previous = new Set<string>();
+    const previous = new Set<number>();
     const current = new Set([tileKey(1, 1), tileKey(2, 2)]);
     const currentTiles: [number, number][] = [[1, 1], [2, 2]];
 
@@ -243,7 +256,7 @@ describe('diffVisibility', () => {
 
   it('all exiting when current is empty', () => {
     const previous = new Set([tileKey(1, 1), tileKey(2, 2)]);
-    const current = new Set<string>();
+    const current = new Set<number>();
     const currentTiles: [number, number][] = [];
 
     const diff = diffVisibility(previous, current, currentTiles);
@@ -253,8 +266,8 @@ describe('diffVisibility', () => {
     expect(diff.exiting).toHaveLength(2);
     // Order of exiting tiles may vary, check membership
     const exitKeys = diff.exiting.map(([x, y]) => tileKey(x, y));
-    expect(exitKeys).toContain('1,1');
-    expect(exitKeys).toContain('2,2');
+    expect(exitKeys).toContain(tileKey(1, 1));
+    expect(exitKeys).toContain(tileKey(2, 2));
   });
 
   it('all stable when sets are identical', () => {
@@ -281,8 +294,8 @@ describe('diffVisibility', () => {
   });
 
   it('handles large diff correctly', () => {
-    const previous = new Set<string>();
-    const current = new Set<string>();
+    const previous = new Set<number>();
+    const current = new Set<number>();
     const currentTiles: [number, number][] = [];
 
     // 100 tiles in previous, 100 different tiles in current

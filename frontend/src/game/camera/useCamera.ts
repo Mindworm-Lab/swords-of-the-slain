@@ -66,6 +66,10 @@ export function useCamera(
   const targetRef = useRef({ x: target.x, y: target.y });
   const rafRef = useRef<number>(0);
 
+  // Track the last rounded values we emitted to React — only call setCamera
+  // when these actually change, avoiding redundant re-renders.
+  const prevRoundedRef = useRef({ x: Math.round(target.x), y: Math.round(target.y) });
+
   // Update target whenever player moves or viewport resizes
   useEffect(() => {
     targetRef.current = target;
@@ -80,15 +84,20 @@ export function useCamera(
 
     // If close enough, snap to target and stop jittering
     if (Math.abs(dx) < SNAP_THRESHOLD && Math.abs(dy) < SNAP_THRESHOLD) {
-      if (cur.x !== tgt.x || cur.y !== tgt.y) {
-        cur.x = tgt.x;
-        cur.y = tgt.y;
-        setCamera({ cameraX: Math.round(cur.x), cameraY: Math.round(cur.y) });
-      }
+      cur.x = tgt.x;
+      cur.y = tgt.y;
     } else {
       cur.x += dx * LERP_SPEED;
       cur.y += dy * LERP_SPEED;
-      setCamera({ cameraX: Math.round(cur.x), cameraY: Math.round(cur.y) });
+    }
+
+    // Only push to React state when the rounded pixel values actually change
+    const rx = Math.round(cur.x);
+    const ry = Math.round(cur.y);
+    if (rx !== prevRoundedRef.current.x || ry !== prevRoundedRef.current.y) {
+      prevRoundedRef.current.x = rx;
+      prevRoundedRef.current.y = ry;
+      setCamera({ cameraX: rx, cameraY: ry });
     }
 
     rafRef.current = requestAnimationFrame(animate);

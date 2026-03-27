@@ -16,9 +16,9 @@ import { Minimap } from './Minimap.tsx';
 
 export interface HUDProps {
   /** Set of explored tile keys. */
-  exploredSet: Set<string>;
+  exploredSet: Set<number>;
   /** Set of currently visible tile keys. */
-  visibleSet: Set<string>;
+  visibleSet: Set<number>;
   /** Player tile X position. */
   playerX: number;
   /** Player tile Y position. */

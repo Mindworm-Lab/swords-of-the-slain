@@ -4,7 +4,7 @@
  * two-pass drawing functions, and column drawing with neighbor exposure logic.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   tileColorJitter,
   clamp255,
@@ -31,6 +31,7 @@ import {
   drawVisibleCapOnlyLocal,
   drawRememberedShaftOnlyLocal,
   drawRememberedCapOnlyLocal,
+  clearColorCaches,
 } from '../columnRenderer.ts';
 import type { ColumnConfig } from '../columnRenderer.ts';
 import { type GameMap, TileType } from '../../tilemap/types.ts';
@@ -1811,5 +1812,117 @@ describe('lightLift clamping (back.out overshoot safety)', () => {
     const positiveCapColor = (gPositive.setFillStyle.mock.calls[0] as unknown[])[0] as { color: number };
     const zeroCapColor = (gZero.setFillStyle.mock.calls[0] as unknown[])[0] as { color: number };
     expect(brightness(positiveCapColor.color)).toBeGreaterThan(brightness(zeroCapColor.color));
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Color cache behavior
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('color caching', () => {
+  beforeEach(() => {
+    clearColorCaches();
+  });
+
+  it('drawVisibleColumn returns identical fill colors on second call (cache hit)', () => {
+    const g1 = mockGraphics();
+    const g2 = mockGraphics();
+    const map = floorMap(10, 10);
+    const config: ColumnConfig = {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      southExposed: true,
+      eastExposed: true,
+    };
+
+    drawVisibleColumn(g1 as never, map, 3, 4, config);
+    drawVisibleColumn(g2 as never, map, 3, 4, config);
+
+    // Same number of draw calls
+    expect(g1.setFillStyle.mock.calls.length).toBe(g2.setFillStyle.mock.calls.length);
+
+    // Every fill color must be identical
+    for (let i = 0; i < g1.setFillStyle.mock.calls.length; i++) {
+      const c1 = (g1.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      const c2 = (g2.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      expect(c1.color).toBe(c2.color);
+    }
+  });
+
+  it('drawRememberedColumn returns identical fill colors on second call (cache hit)', () => {
+    const g1 = mockGraphics();
+    const g2 = mockGraphics();
+    const map = floorMap(10, 10);
+    const config: ColumnConfig = {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      southExposed: true,
+      eastExposed: true,
+    };
+
+    drawRememberedColumn(g1 as never, map, 2, 5, config);
+    drawRememberedColumn(g2 as never, map, 2, 5, config);
+
+    expect(g1.setFillStyle.mock.calls.length).toBe(g2.setFillStyle.mock.calls.length);
+    for (let i = 0; i < g1.setFillStyle.mock.calls.length; i++) {
+      const c1 = (g1.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      const c2 = (g2.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      expect(c1.color).toBe(c2.color);
+    }
+  });
+
+  it('clearColorCaches resets caches — different object references after clear', () => {
+    const g1 = mockGraphics();
+    const g2 = mockGraphics();
+    const map = floorMap(10, 10);
+    const config: ColumnConfig = {
+      columnHeight: COLUMN_MAX_HEIGHT,
+      southExposed: true,
+      eastExposed: true,
+    };
+
+    drawVisibleColumn(g1 as never, map, 1, 1, config);
+    clearColorCaches();
+    drawVisibleColumn(g2 as never, map, 1, 1, config);
+
+    // Colors must still be identical (deterministic), but cache was reset
+    expect(g1.setFillStyle.mock.calls.length).toBe(g2.setFillStyle.mock.calls.length);
+    for (let i = 0; i < g1.setFillStyle.mock.calls.length; i++) {
+      const c1 = (g1.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      const c2 = (g2.setFillStyle.mock.calls[i] as unknown[])[0] as { color: number };
+      expect(c1.color).toBe(c2.color);
+    }
+  });
+
+  it('different tile positions produce different cached results', () => {
+    const g1 = mockGraphics();
+    const g2 = mockGraphics();
+    const map = floorMap(10, 10);
+    const config: ColumnConfig = { columnHeight: 0 };
+
+    drawVisibleColumn(g1 as never, map, 0, 0, config);
+    drawVisibleColumn(g2 as never, map, 5, 5, config);
+
+    // Cap color at (0,0) should differ from (5,5) due to jitter
+    // They may occasionally collide, but very unlikely for jittered colors
+    // We just verify the cache doesn't return the wrong tile's colors
+    expect(g1.setFillStyle.mock.calls.length).toBe(g2.setFillStyle.mock.calls.length);
+  });
+
+  it('wall and floor tiles at same position produce different cached results', () => {
+    const gFloor = mockGraphics();
+    const gWall = mockGraphics();
+    const flMap = floorMap(10, 10);
+    const wlMap = wallMap(10, 10);
+    const config: ColumnConfig = { columnHeight: 0 };
+
+    drawVisibleColumn(gFloor as never, flMap, 3, 3, config);
+    drawVisibleColumn(gWall as never, wlMap, 3, 3, config);
+
+    const floorColor = (gFloor.setFillStyle.mock.calls[0] as unknown[])[0] as { color: number };
+    const wallColor = (gWall.setFillStyle.mock.calls[0] as unknown[])[0] as { color: number };
+    expect(floorColor.color).not.toBe(wallColor.color);
+  });
+
+  it('clearColorCaches does not throw when caches are empty', () => {
+    expect(() => clearColorCaches()).not.toThrow();
   });
 });

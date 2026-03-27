@@ -2,7 +2,7 @@ import { useRef, useCallback, useEffect } from 'react';
 import { Container, Graphics } from 'pixi.js';
 import { gsap } from 'gsap';
 import type { GameMap } from '../tilemap/types.ts';
-import { tileKey } from './los.ts';
+import { tileKey, tileKeyX, tileKeyY } from './los.ts';
 import type { FogState } from './useFogOfWar.ts';
 import {
   drawVisibleShaftOnly,
@@ -39,12 +39,28 @@ interface AnimState {
   lightLift: number;
 }
 
+/** Tile descriptor used for depth-sorted drawing within a single layer. */
+interface TileEntry {
+  x: number;
+  y: number;
+  southExposed: boolean;
+  eastExposed: boolean;
+  anim?: AnimState;
+}
+
+// ── Depth sort comparator ───────────────────────────────────────────
+
+/** Sort tiles by isometric depth: (x+y) ascending, then y, then x. */
+function depthSort(a: TileEntry, b: TileEntry): number {
+  return (a.x + a.y) - (b.x + b.y) || a.y - b.y || a.x - b.x;
+}
+
 // ── Exposure helpers ────────────────────────────────────────────────
 
 function computeExposure(
   x: number,
   y: number,
-  tileSet: Set<string>,
+  tileSet: Set<number>,
 ): { southExposed: boolean; eastExposed: boolean } {
   const southKey = tileKey(x, y + 1);
   const eastKey = tileKey(x + 1, y);
@@ -66,136 +82,210 @@ export function FogOfWarRenderer({
   fogState,
 }: FogOfWarRendererProps): React.JSX.Element {
   const containerRef = useRef<Container | null>(null);
-  const mainGraphicsRef = useRef<Graphics | null>(null);
+
+  // 3-layer Graphics refs (back-to-front: remembered, animating, visible)
+  const rememberedGRef = useRef<Graphics | null>(null);
+  const animatingGRef = useRef<Graphics | null>(null);
+  const visibleGRef = useRef<Graphics | null>(null);
 
   const activeTweensRef = useRef<gsap.core.Tween[]>([]);
-  const animatingTilesRef = useRef<Map<string, AnimState>>(new Map());
+  const animatingTilesRef = useRef<Map<number, AnimState>>(new Map());
   const prevFogRef = useRef<FogState | null>(null);
-  
-  const redrawRequestedRef = useRef(false);
+
+  const animRedrawRequestedRef = useRef(false);
+  const staticRedrawRequestedRef = useRef(false);
+
+  // ── Layer setup ─────────────────────────────────────────────────
 
   const setupLayers = useCallback((parentContainer: Container) => {
-    if (mainGraphicsRef.current) return;
+    if (rememberedGRef.current) return;
 
-    const mainG = new Graphics();
-    parentContainer.addChild(mainG);
-    mainGraphicsRef.current = mainG;
+    const rememberedG = new Graphics();
+    const animatingG = new Graphics();
+    const visibleG = new Graphics();
+
+    // Add in back-to-front order: remembered → animating → visible
+    parentContainer.addChild(rememberedG);
+    parentContainer.addChild(animatingG);
+    parentContainer.addChild(visibleG);
+
+    rememberedGRef.current = rememberedG;
+    animatingGRef.current = animatingG;
+    visibleGRef.current = visibleG;
   }, []);
 
-  const drawAllTiles = useCallback(
+  // ── Static layer: remembered (explored-not-visible) ─────────────
+
+  const drawStaticRemembered = useCallback(
     (g: Graphics, fogSt: FogState) => {
       g.clear();
 
+      // Build union set for exposure calculation (explored + visible)
       const unionSet = new Set(fogSt.exploredSet);
       for (const key of fogSt.visibleSet) {
         unionSet.add(key);
       }
 
-      const tiles: {
-        x: number;
-        y: number;
-        state: 'visible' | 'remembered' | 'animating';
-        anim?: AnimState;
-        southExposed: boolean;
-        eastExposed: boolean;
-      }[] = [];
-
-      for (const key of fogSt.visibleSet) {
-        if (animatingTilesRef.current.has(key)) continue;
-        const parts = key.split(',');
-        const x = Number(parts[0]);
-        const y = Number(parts[1]);
-        const { southExposed, eastExposed } = computeExposure(x, y, fogSt.visibleSet);
-        tiles.push({ x, y, state: 'visible', southExposed, eastExposed });
-      }
+      const tiles: TileEntry[] = [];
 
       for (const key of fogSt.exploredSet) {
         if (fogSt.visibleSet.has(key)) continue;
         if (animatingTilesRef.current.has(key)) continue;
-        const parts = key.split(',');
-        const x = Number(parts[0]);
-        const y = Number(parts[1]);
+        const x = tileKeyX(key);
+        const y = tileKeyY(key);
         const { southExposed, eastExposed } = computeExposure(x, y, unionSet);
-        tiles.push({ x, y, state: 'remembered', southExposed, eastExposed });
+        tiles.push({ x, y, southExposed, eastExposed });
       }
 
+      tiles.sort(depthSort);
+
+      const config = {
+        columnHeight: COLUMN_MAX_HEIGHT,
+        southExposed: false,
+        eastExposed: false,
+        yOffset: REMEMBERED_YOFFSET,
+      };
+
+      for (const tile of tiles) {
+        config.southExposed = tile.southExposed;
+        config.eastExposed = tile.eastExposed;
+        drawRememberedShaftOnly(g, map, tile.x, tile.y, config);
+        drawRememberedCapOnly(g, map, tile.x, tile.y, config);
+      }
+    },
+    [map],
+  );
+
+  // ── Static layer: visible (stable visible tiles) ────────────────
+
+  const drawStaticVisible = useCallback(
+    (g: Graphics, fogSt: FogState) => {
+      g.clear();
+
+      const tiles: TileEntry[] = [];
+
+      for (const key of fogSt.visibleSet) {
+        if (animatingTilesRef.current.has(key)) continue;
+        const x = tileKeyX(key);
+        const y = tileKeyY(key);
+        const { southExposed, eastExposed } = computeExposure(x, y, fogSt.visibleSet);
+        tiles.push({ x, y, southExposed, eastExposed });
+      }
+
+      tiles.sort(depthSort);
+
+      const config = {
+        columnHeight: COLUMN_MAX_HEIGHT,
+        southExposed: false,
+        eastExposed: false,
+        yOffset: 0,
+      };
+
+      for (const tile of tiles) {
+        config.southExposed = tile.southExposed;
+        config.eastExposed = tile.eastExposed;
+        drawVisibleShaftOnly(g, map, tile.x, tile.y, config);
+        drawVisibleCapOnly(g, map, tile.x, tile.y, config);
+      }
+    },
+    [map],
+  );
+
+  // ── Animation layer: only animating tiles ───────────────────────
+
+  const drawAnimating = useCallback(
+    (g: Graphics) => {
+      g.clear();
+
+      if (animatingTilesRef.current.size === 0) return;
+
+      const tiles: TileEntry[] = [];
       for (const anim of animatingTilesRef.current.values()) {
         tiles.push({
           x: anim.x,
           y: anim.y,
-          state: 'animating',
-          anim,
           southExposed: anim.southExposed,
           eastExposed: anim.eastExposed,
+          anim,
         });
       }
 
-      // Sort all tiles together by isometric depth (x + y)
-      tiles.sort((a, b) => (a.x + a.y) - (b.x + b.y) || a.y - b.y || a.x - b.x);
+      tiles.sort(depthSort);
 
-      // Single Pass: Shaft then Cap for each tile
       for (const tile of tiles) {
-        let config;
-        let useRemembered = false;
+        const anim = tile.anim!;
+        const config = {
+          columnHeight: anim.columnHeight,
+          alpha: Math.max(0, Math.min(1, anim.alpha)),
+          yOffset: anim.yOffset,
+          southExposed: tile.southExposed,
+          eastExposed: tile.eastExposed,
+          lightLift: Math.max(0, anim.lightLift || 0),
+        };
 
-        if (tile.state === 'visible') {
-          config = {
-            columnHeight: COLUMN_MAX_HEIGHT,
-            southExposed: tile.southExposed,
-            eastExposed: tile.eastExposed,
-            yOffset: 0,
-          };
-          useRemembered = false;
-        } else if (tile.state === 'remembered') {
-          config = {
-            columnHeight: COLUMN_MAX_HEIGHT,
-            southExposed: tile.southExposed,
-            eastExposed: tile.eastExposed,
-            yOffset: REMEMBERED_YOFFSET,
-          };
+        let useRemembered = false;
+        if (anim.type === 'revisit' && anim.paletteProgress < 0.5) {
           useRemembered = true;
-        } else if (tile.state === 'animating' && tile.anim) {
-          config = {
-            columnHeight: tile.anim.columnHeight,
-            alpha: Math.max(0, Math.min(1, tile.anim.alpha)),
-            yOffset: tile.anim.yOffset,
-            southExposed: tile.southExposed,
-            eastExposed: tile.eastExposed,
-            lightLift: tile.anim.lightLift || 0,
-          };
-          if (tile.anim.type === 'revisit' && tile.anim.paletteProgress < 0.5) {
-            useRemembered = true;
-          } else if (tile.anim.type === 'conceal' && tile.anim.paletteProgress >= 0.5) {
-            useRemembered = true;
-          }
+        } else if (anim.type === 'conceal' && anim.paletteProgress >= 0.5) {
+          useRemembered = true;
         }
 
-        if (config) {
-          if (useRemembered) {
-            drawRememberedShaftOnly(g, map, tile.x, tile.y, config);
-            drawRememberedCapOnly(g, map, tile.x, tile.y, config);
-          } else {
-            drawVisibleShaftOnly(g, map, tile.x, tile.y, config);
-            drawVisibleCapOnly(g, map, tile.x, tile.y, config);
-          }
+        if (useRemembered) {
+          drawRememberedShaftOnly(g, map, tile.x, tile.y, config);
+          drawRememberedCapOnly(g, map, tile.x, tile.y, config);
+        } else {
+          drawVisibleShaftOnly(g, map, tile.x, tile.y, config);
+          drawVisibleCapOnly(g, map, tile.x, tile.y, config);
         }
       }
     },
     [map],
   );
 
-  const requestRedraw = useCallback((): void => {
-    if (redrawRequestedRef.current) return;
-    redrawRequestedRef.current = true;
+  // ── Redraw request functions ────────────────────────────────────
+
+  /**
+   * Request redraw of ONLY the animating layer.
+   * Called by GSAP onUpdate — this is the hot path during animations.
+   * Only ~20-40 animating tiles are redrawn per frame, not the entire map.
+   */
+  const requestAnimRedraw = useCallback((): void => {
+    if (animRedrawRequestedRef.current) return;
+    animRedrawRequestedRef.current = true;
     requestAnimationFrame(() => {
-      redrawRequestedRef.current = false;
-      const currentFog = prevFogRef.current;
-      if (!currentFog) return;
-      if (mainGraphicsRef.current) {
-        drawAllTiles(mainGraphicsRef.current, currentFog);
+      animRedrawRequestedRef.current = false;
+      if (animatingGRef.current) {
+        drawAnimating(animatingGRef.current);
       }
     });
-  }, [drawAllTiles]);
+  }, [drawAnimating]);
+
+  /**
+   * Request redraw of both static layers AND the animating layer.
+   * Called when fogState changes or when an animation completes
+   * (tiles move from animating → static).
+   */
+  const requestStaticRedraw = useCallback((): void => {
+    if (staticRedrawRequestedRef.current) return;
+    staticRedrawRequestedRef.current = true;
+    requestAnimationFrame(() => {
+      staticRedrawRequestedRef.current = false;
+      const currentFog = prevFogRef.current;
+      if (!currentFog) return;
+      if (rememberedGRef.current) {
+        drawStaticRemembered(rememberedGRef.current, currentFog);
+      }
+      if (visibleGRef.current) {
+        drawStaticVisible(visibleGRef.current, currentFog);
+      }
+      // Also redraw animating layer since the set of animating tiles changed
+      if (animatingGRef.current) {
+        drawAnimating(animatingGRef.current);
+      }
+    });
+  }, [drawStaticRemembered, drawStaticVisible, drawAnimating]);
+
+  // ── Tween management ────────────────────────────────────────────
 
   const removeTweenFromActive = (tween: gsap.core.Tween): void => {
     const idx = activeTweensRef.current.indexOf(tween);
@@ -210,10 +300,10 @@ export function FogOfWarRenderer({
     }
   }, []);
 
-
+  // ── Animation starters ──────────────────────────────────────────
 
   const animateRevealNew = useCallback(
-    (x: number, y: number, playerX: number, playerY: number, visibleSet: Set<string>) => {
+    (x: number, y: number, playerX: number, playerY: number, visibleSet: Set<number>) => {
       const key = tileKey(x, y);
       if (animatingTilesRef.current.has(key)) return;
 
@@ -241,7 +331,7 @@ export function FogOfWarRenderer({
       const onComplete = () => {
         animatingTilesRef.current.delete(key);
         removeTweenFromActive(tween);
-        requestRedraw();
+        requestStaticRedraw();
         onFrontierAnimationComplete();
       };
 
@@ -252,16 +342,16 @@ export function FogOfWarRenderer({
         duration,
         delay,
         ease: 'back.out(1.5)',
-        onUpdate: requestRedraw,
+        onUpdate: requestAnimRedraw,
         onComplete,
       });
       activeTweensRef.current.push(tween);
     },
-    [requestRedraw, onFrontierAnimationComplete],
+    [requestAnimRedraw, requestStaticRedraw, onFrontierAnimationComplete],
   );
 
   const animateRevealRevisit = useCallback(
-    (x: number, y: number, playerX: number, playerY: number, visibleSet: Set<string>) => {
+    (x: number, y: number, playerX: number, playerY: number, visibleSet: Set<number>) => {
       const key = tileKey(x, y);
       if (animatingTilesRef.current.has(key)) return;
 
@@ -289,7 +379,7 @@ export function FogOfWarRenderer({
       const onComplete = () => {
         animatingTilesRef.current.delete(key);
         removeTweenFromActive(tween);
-        requestRedraw();
+        requestStaticRedraw();
         onFrontierAnimationComplete();
       };
 
@@ -300,16 +390,16 @@ export function FogOfWarRenderer({
         duration,
         delay,
         ease: 'back.out(1.2)',
-        onUpdate: requestRedraw,
+        onUpdate: requestAnimRedraw,
         onComplete,
       });
       activeTweensRef.current.push(tween);
     },
-    [requestRedraw, onFrontierAnimationComplete],
+    [requestAnimRedraw, requestStaticRedraw, onFrontierAnimationComplete],
   );
 
   const animateConceal = useCallback(
-    (x: number, y: number, playerX: number, playerY: number, visibleSet: Set<string>) => {
+    (x: number, y: number, playerX: number, playerY: number, visibleSet: Set<number>) => {
       const key = tileKey(x, y);
       if (animatingTilesRef.current.has(key)) return;
 
@@ -337,7 +427,7 @@ export function FogOfWarRenderer({
       const onComplete = () => {
         animatingTilesRef.current.delete(key);
         removeTweenFromActive(tween);
-        requestRedraw();
+        requestStaticRedraw();
         onFrontierAnimationComplete();
       };
 
@@ -348,13 +438,15 @@ export function FogOfWarRenderer({
         duration,
         delay,
         ease: 'power2.in',
-        onUpdate: requestRedraw,
+        onUpdate: requestAnimRedraw,
         onComplete,
       });
       activeTweensRef.current.push(tween);
     },
-    [requestRedraw, onFrontierAnimationComplete],
+    [requestAnimRedraw, requestStaticRedraw, onFrontierAnimationComplete],
   );
+
+  // ── fogState change effect ──────────────────────────────────────
 
   useEffect(() => {
     const parent = containerRef.current;
@@ -362,12 +454,12 @@ export function FogOfWarRenderer({
 
     setupLayers(parent);
 
-    const mainG = mainGraphicsRef.current;
-    if (!mainG) return;
+    if (!rememberedGRef.current || !animatingGRef.current || !visibleGRef.current) return;
 
     prevFogRef.current = fogState;
 
-    requestRedraw();
+    // Redraw both static layers + animating layer
+    requestStaticRedraw();
 
     for (const tile of fogState.enteringNew) {
       animateRevealNew(tile[0], tile[1], fogState.playerX, fogState.playerY, fogState.visibleSet);
@@ -383,11 +475,13 @@ export function FogOfWarRenderer({
   }, [
     fogState,
     setupLayers,
-    requestRedraw,
+    requestStaticRedraw,
     animateRevealNew,
     animateRevealRevisit,
     animateConceal,
   ]);
+
+  // ── Cleanup on unmount ──────────────────────────────────────────
 
   useEffect(() => {
     const tweens = activeTweensRef.current;
